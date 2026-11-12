@@ -9,6 +9,7 @@ from szu_guardian.appearance import ThemeStore, PRESETS, normalize_color, accent
 from szu_guardian.storage import ConfigStore
 from szu_guardian.monitor import MonitorEvent
 from szu_guardian.ui import GuardianApp
+from szu_guardian.glass import accent_for_hue, hue_of
 from PySide6.QtWidgets import QLineEdit
 
 class AppearanceTests(unittest.TestCase):
@@ -53,30 +54,38 @@ class InterfaceTests(unittest.TestCase):
     def test_color_controls_only_on_settings_and_persist_without_credentials(self):
         app = self.app
         app._select_page(0)
-        self.assertFalse(app.hex_input.isVisible())
-        app._select_page(1)
-        self.assertTrue(app.hex_input.isVisible())
-        app._apply_theme('#ADE5D1')
-        app._save_theme()
-        self.assertEqual(app.theme_store.load(), '#ADE5D1')
+        self.assertFalse(app.hue_slider.isVisible())
+        app._select_page(2)
+        self.assertTrue(app.hue_slider.isVisible())
+        app._choose_hue(165)
+        self.assertEqual(app.theme_store.load(), accent_for_hue(165))
+        self.assertTrue(app.swatches[1].selected)
         self.assertFalse(app.store.path.exists())
         app._select_page(0)
+
+    def test_old_pastel_theme_keeps_its_hue(self):
+        self.assertEqual(hue_of('#A8C7FA'), 217)
+        self.assertEqual(hue_of('#808080'), 207)
 
     def test_live_countdown_and_offline_not_shown_as_online(self):
         app = self.app
         app.active_interval = 3
         app._apply_event(MonitorEvent('online', 'online'))
         app._apply_event(MonitorEvent('waiting', 'next'))
-        self.assertIn('3 分钟', app.countdown.text())
+        self.assertIn('3:00', app.countdown.text())
         app.next_check = time.time() + 59
         app._update_countdown()
-        self.assertIn('1 分钟', app.countdown.text())
+        self.assertIn('0:59', app.countdown.text())
+        self.assertIn('0:59', app.island.countdown)
         app._apply_event(MonitorEvent('offline', 'offline'))
         app._apply_event(MonitorEvent('waiting', 'retry'))
-        self.assertEqual(app.status_title.text(), '校园网连接异常')
+        self.assertEqual(app.status_title.text(), '已断开')
         self.assertEqual(app.status_badge.text(), '等待重试')
+        self.assertIn('秒后复查', app.countdown.text())
+        self.assertTrue(app.island.alert)
         app._apply_event(MonitorEvent('stopped', 'stop'))
         self.assertIsNone(app.next_check)
+        self.assertEqual(app.check_button.text(), '开始守护')
 
     def test_password_is_masked_by_default_and_can_toggle(self):
         app = self.app
@@ -101,8 +110,37 @@ class InterfaceTests(unittest.TestCase):
 
     def test_uu_result_is_displayed_without_starting_real_uu(self):
         self.app.events.put(('uu-status', ('完整重启：主程序 + 后台服务（已授权）', True)))
+        self.app.events.put(('uu-conn', 5))
         self.app._poll()
         self.assertEqual(self.app.authorize_button.text(), '取消授权')
+        self.assertEqual(self.app.uu_tile.value, '5 条')
+        self.assertIn('5 条连接', self.app.island.subtitle)
+
+    def test_island_springs_open_and_closes(self):
+        island = self.app.island
+        island.expand()
+        deadline = time.time() + 2
+        while island._anim.state() and time.time() < deadline:
+            self.app.qt.processEvents()
+        self.assertGreater(island.width(), 600)
+        self.assertTrue(island.check_button.isVisible())
+        island._go(0.0)
+        deadline = time.time() + 2
+        while island._anim.state() and time.time() < deadline:
+            self.app.qt.processEvents()
+        self.assertLess(island.width(), 300)
+
+    def test_switches_save_immediately_once_account_exists(self):
+        app = self.app
+        app.username.setText('')
+        with patch.object(app.store, 'save') as save:
+            app.start_on_launch.setChecked(not app.start_on_launch.isChecked())
+            save.assert_not_called()
+        app.username.setText('demo')
+        app.password.setText('not-a-real-password')
+        with patch.object(app.store, 'save') as save:
+            app.direct_mode.setChecked(not app.direct_mode.isChecked())
+            save.assert_called_once()
 
     def test_saving_while_running_applies_new_interval(self):
         app = self.app
@@ -116,7 +154,7 @@ class InterfaceTests(unittest.TestCase):
             self.assertEqual(monitor.update_config.call_args.args[0].interval_minutes, 2)
             self.assertEqual(app.active_interval, 2)
             app._apply_event(MonitorEvent('waiting', 'next'))
-            self.assertIn('2 分钟', app.countdown.text())
+            self.assertIn('2:00', app.countdown.text())
 
     def test_tray_icon_follows_status_and_duplicate_launch_is_logged(self):
         app = self.app

@@ -10,10 +10,10 @@ from collections import deque
 from pathlib import Path
 from PySide6 import QtSvg  # Load SVG dependency before sanitizing child-process environment.
 from PySide6.QtCore import Qt, QTimer, QRectF, QEvent
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QLinearGradient, QRadialGradient, QFontDatabase
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QComboBox, QSpinBox, QCheckBox, QStackedWidget, QScrollArea, QTextEdit, QColorDialog, QFileDialog, QMessageBox, QSystemTrayIcon, QMenu, QButtonGroup
-from . import cache_dir, uu_remote
-from .appearance import ThemeStore, PRESETS, DEFAULT_COLOR, normalize_color, accent_color
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QFontDatabase, QKeySequence, QShortcut
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QComboBox, QSpinBox, QStackedWidget, QScrollArea, QTextEdit, QColorDialog, QFileDialog, QMessageBox, QSystemTrayIcon, QMenu, QButtonGroup
+from . import __version__, cache_dir, uu_remote
+from .appearance import ThemeStore, normalize_color
 from .models import AppConfig, ZONE_AUTO, ZONE_OFFICE, ZONE_DORMITORY
 from .monitor import MonitorController, MonitorEvent
 from .storage import ConfigStore
@@ -25,15 +25,26 @@ from .log_policy import RoutineLogFilter
 from .runtime_environment import sanitize_external_environment
 from .net_watch import AddressChangeWatcher
 from .outage_stats import compute_day, describe, format_duration
-from .motion import AnimatedSwitch, ColorTween, HoverLift, SlidingNav, StatusOrb, blend, fade_in, set_title_bar_color, surface_top_color
+from .motion import AnimatedSwitch, HoverLift, fade_in, set_title_bar_color
+from .glass import (THEME, BAD_COLOR, OK_COLOR, WARN_COLOR, Backdrop, ColorChip, GlassCard, GradientLabel, HueSlider, Island, NavItem, PointerLight,
+                    ProgressRing, StatTile, StatusPill, Ticker, accent_for_hue, hue_of)
+
 ZONES = [('教学 / 办公区（实验室）', ZONE_OFFICE), ('宿舍区', ZONE_DORMITORY), ('自动尝试（实验性）', ZONE_AUTO)]
+ZONE_SHORT = {ZONE_OFFICE: '教学/办公区', ZONE_DORMITORY: '宿舍区', ZONE_AUTO: '自动选择区域'}
+THEME_PRESETS = [('小清新蓝', 207), ('薄荷绿', 165), ('湖水青', 188), ('薰衣草', 255), ('樱花粉', 335), ('暖杏', 28)]
 ASSETS = Path(__file__).resolve().parent / 'assets'
+PAGE_STATUS, PAGE_RECORDS, PAGE_SETTINGS = 0, 1, 2
+BUSY_STATES = ('checking', 'reconnecting', 'restarting')
+BAD_WORDS = ('失效', '失败', '异常', '不可用', '断开', '错误')
+GOOD_WORDS = ('恢复', '正常', '成功', '已重连', '已连接', '上线')
+
 
 def label(text: str, name: str='') -> QLabel:
     item = QLabel(text)
     item.setObjectName(name)
     item.setTextFormat(Qt.TextFormat.PlainText)
     return item
+
 
 def button(text: str, callback, primary: bool=False) -> QPushButton:
     item = QPushButton(text)
@@ -42,68 +53,48 @@ def button(text: str, callback, primary: bool=False) -> QPushButton:
     item.clicked.connect(callback)
     return item
 
-def card() -> tuple[QFrame, QVBoxLayout]:
-    frame = QFrame()
-    frame.setObjectName('glassCard')
+
+def card() -> tuple[GlassCard, QVBoxLayout]:
+    frame = GlassCard()
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(22, 18, 22, 18)
-    layout.setSpacing(12)
+    layout.setSpacing(10)
     return (frame, layout)
+
 
 Switch = AnimatedSwitch
 
-class Glyph(QWidget):
 
-    def __init__(self, kind: str='network', size: int=80):
-        super().__init__()
-        self.kind = kind
-        self.color = QColor('#299259')
-        self.setFixedSize(size, size)
+def clock(seconds: float) -> str:
+    seconds = max(0, math.ceil(seconds))
+    return f'{seconds // 60}:{seconds % 60:02d}'
 
-    def paintEvent(self, event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.scale(self.width() / 80, self.height() / 80)
-        p.setPen(QPen(QColor(255, 255, 255, 220), 1))
-        p.setBrush(QColor(255, 255, 255, 130))
-        p.drawRoundedRect(QRectF(1, 1, 78, 78), 18, 18)
-        p.setPen(QPen(self.color, 2.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        if self.kind == 'network':
-            p.drawRoundedRect(QRectF(33, 17, 14, 14), 3, 3)
-            p.drawLine(40, 32, 40, 43)
-            p.drawLine(21, 43, 59, 43)
-            p.drawLine(21, 43, 21, 53)
-            p.drawLine(59, 43, 59, 53)
-            p.drawRoundedRect(QRectF(14, 53, 14, 14), 3, 3)
-            p.drawRoundedRect(QRectF(52, 53, 14, 14), 3, 3)
-        else:
-            p.drawEllipse(QRectF(22, 22, 36, 36))
-            p.drawEllipse(QRectF(33, 33, 14, 14))
-            for x, y, dx, dy in [(40, 16, 0, 6), (40, 58, 0, 6), (16, 40, 6, 0), (58, 40, 6, 0)]:
-                p.drawLine(x, y, x + dx, y + dy)
 
-class GlassSurface(QWidget):
+class Shell(QWidget):
+    """Central widget: animated backdrop, floating sidebar, pages and island."""
+
+    SIDE_W = 188
 
     def __init__(self):
         super().__init__()
-        self.tint = QColor(DEFAULT_COLOR)
+        self.backdrop = Backdrop(self)
+        self.sidebar: QWidget | None = None
+        self.pages: QWidget | None = None
+        self.island: Island | None = None
 
-    def paintEvent(self, event) -> None:
-        p = QPainter(self)
-        white = QColor('white')
-        # Mostly vertical so the top edge is one even colour that the
-        # (tinted) Windows title bar continues seamlessly.
-        g = QLinearGradient(0, 0, self.width() * 0.25, self.height())
-        g.setColorAt(0, surface_top_color(self.tint))
-        g.setColorAt(0.5, blend(self.tint, white, 0.30))
-        g.setColorAt(1, blend(self.tint, white, 0.10))
-        p.fillRect(self.rect(), g)
-        for x, y, scale, alpha in [(0.15, 0.30, 0.7, 85), (0.9, 0.35, 0.5, 70), (0.45, 0.88, 0.55, 80)]:
-            glow = QRadialGradient(self.width() * x, self.height() * y, self.width() * scale)
-            glow.setColorAt(0, QColor(255, 255, 255, alpha))
-            glow.setColorAt(1, QColor(255, 255, 255, 0))
-            p.fillRect(self.rect(), glow)
+    def resizeEvent(self, event) -> None:
+        w, h = self.width(), self.height()
+        self.backdrop.setGeometry(0, 0, w, h)
+        left = 12 + self.SIDE_W + 24
+        if self.sidebar is not None:
+            self.sidebar.setGeometry(12, 10, self.SIDE_W, h - 22)
+        if self.pages is not None:
+            self.pages.setGeometry(left, 86, w - left - 28, h - 86 - 16)
+        if self.island is not None:
+            self.island.place((left + w - 28) // 2, 10)
+            self.island.raise_()
+        super().resizeEvent(event)
+
 
 class GlassWindow(QMainWindow):
 
@@ -113,7 +104,7 @@ class GlassWindow(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        set_title_bar_color(self, surface_top_color(self.owner.surface.tint))
+        set_title_bar_color(self, THEME.palette.bg)
 
     def closeEvent(self, event) -> None:
         if self.owner.is_exiting:
@@ -133,9 +124,11 @@ class GlassWindow(QMainWindow):
             QTimer.singleShot(0, self.hide)
         super().changeEvent(event)
 
+
 class GuardianApp:
     LOG_VIEW_LIMIT = 2000
     TRAY_COLORS = {'online': '#2FA866', 'offline': '#D2483A', 'busy': '#E3A23B', 'stopped': '#8C97A8'}
+    UU_REFRESH_MS = 120_000
 
     def __init__(self, store: ConfigStore, launched_by_autostart: bool=False, *, preview: bool=False):
         self.qt = QApplication.instance() or QApplication(sys.argv[:1])
@@ -144,7 +137,7 @@ class GuardianApp:
         sanitize_external_environment(getattr(sys, '_MEIPASS', None))
         if not QFontDatabase.families():
             fonts = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Fonts'
-            for font_name in ('msyh.ttc', 'msyhbd.ttc'):
+            for font_name in ('msyh.ttc', 'msyhbd.ttc', 'SegUIVar.ttf'):
                 QFontDatabase.addApplicationFont(str(fonts / font_name))
         self.qt.setFont(QFont('Microsoft YaHei UI', 10))
         self.qt.setQuitOnLastWindowClosed(False)
@@ -182,147 +175,218 @@ class GuardianApp:
         self.busy = False
         self.manual_thread = None
         self.next_check = None
+        self.wait_total = None
         self.last_network_state = 'stopped'
+        self.ever_started = False
+        self.uu_connections: int | None = None
+        self.uu_authorized = False
         self.window = GlassWindow(self)
         self.window.setWindowTitle('校园网守护')
-        self.window.resize(1010, 810)
-        self.window.setMinimumSize(820, 660)
+        self.window.resize(1000, 640)
+        self.window.setMinimumSize(920, 600)
         self.icon = QIcon(str(ASSETS / 'app.ico'))
         self.window.setWindowIcon(self.icon)
-        self.surface = GlassSurface()
-        self.window.setCentralWidget(self.surface)
-        self.tint_tween = ColorTween(self.window, self._paint_tint)
+        self.shell = Shell()
+        self.window.setCentralWidget(self.shell)
+        self.pointer_light = PointerLight(self.window)
         self._build_ui()
         self._build_tray()
-        self.hover_lifts = [HoverLift(item) for item in self.window.findChildren(QPushButton) if item.objectName() != 'tab' and not item.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)]
         self._apply_theme(self.saved_color, animated=False)
+        THEME.changed.connect(self._theme_frame)
         self.timer = QTimer(self.window)
         self.timer.timeout.connect(self._poll)
         self.timer.start(150)
         self.clock_timer = QTimer(self.window)
         self.clock_timer.timeout.connect(self._update_countdown)
         self.clock_timer.start(1000)
+        self.uu_timer = QTimer(self.window)
+        self.uu_timer.timeout.connect(self._refresh_uu_connections)
         # Show what was logged earlier today, so a restart keeps the history.
         self.log_entries.extend(self.local_log.read_day(limit=self.LOG_VIEW_LIMIT))
         self._append_log('程序已启动')
         if self.migrated_logs:
             self._append_log(f'已把 {self.migrated_logs} 个日志文件移到 {self.local_log.directory}')
         self._refresh_stats()
+        self._set_idle_state()
         self.last_network_trigger = 0.0
         self.net_watch = AddressChangeWatcher(lambda: self.events.put(('netchange', None)))
         if not preview:
             self.net_watch.start()
             self._refresh_uu_status_async()
+            self._refresh_uu_connections()
+            self.uu_timer.start(self.UU_REFRESH_MS)
             QTimer.singleShot(300, self._initial_start)
 
+    # ------------------------------------------------------------------ layout
     def _build_ui(self) -> None:
-        outer = QVBoxLayout(self.surface)
-        outer.setContentsMargins(30, 16, 30, 14)
-        outer.setSpacing(12)
-        row = QHBoxLayout()
+        self._build_sidebar()
+        self.pages = QStackedWidget(self.shell)
+        self.shell.pages = self.pages
+        self._build_status()
+        self._build_logs()
+        self._build_settings()
+        self.island = Island(self.shell, self._check_now, self._stop_monitoring)
+        self.shell.island = self.island
+        for key, page in (('1', PAGE_STATUS), ('2', PAGE_RECORDS), ('3', PAGE_SETTINGS)):
+            QShortcut(QKeySequence(key), self.window, activated=lambda p=page: self._select_page(p))
+        QShortcut(QKeySequence('R'), self.window, activated=self._check_now)
+        QShortcut(QKeySequence('P'), self.window, activated=self._stop_monitoring)
+        QShortcut(QKeySequence('U'), self.window, activated=self._restart_uu_now)
+
+    def _build_sidebar(self) -> None:
+        side = GlassCard(self.shell)
+        self.shell.sidebar = side
+        layout = QVBoxLayout(side)
+        layout.setContentsMargins(10, 14, 10, 12)
+        layout.setSpacing(3)
+        head = QHBoxLayout()
+        head.setContentsMargins(8, 2, 0, 12)
         logo = QLabel()
-        logo.setPixmap(self.icon.pixmap(28, 28))
-        row.addWidget(logo)
-        row.addWidget(label('校园网守护', 'appTitle'))
-        row.addStretch()
-        row.addWidget(label('SZU NETWORK', 'eyebrow'))
-        outer.addLayout(row)
-        row = QHBoxLayout()
-        row.addStretch()
-        nav = QFrame()
-        nav.setObjectName('nav')
-        nav.setFixedHeight(46)
-        nav_layout = QHBoxLayout(nav)
-        nav_layout.setContentsMargins(4, 4, 4, 4)
-        nav_layout.setSpacing(3)
+        logo.setPixmap(self.icon.pixmap(22, 22))
+        head.addWidget(logo)
+        head.addSpacing(6)
+        head.addWidget(label('校园网守护', 'appTitle'))
+        head.addStretch()
+        layout.addLayout(head)
         self.nav_group = QButtonGroup(self.window)
         self.nav_group.setExclusive(True)
-        for index, text in enumerate(('状态', '设置', '记录')):
-            tab = QPushButton(text)
-            tab.setObjectName('tab')
-            tab.setCheckable(True)
-            tab.setFixedSize(112, 34)
-            self.nav_group.addButton(tab, index)
-            nav_layout.addWidget(tab)
-        self.nav_group.button(0).setChecked(True)
+        for index, (text, key) in enumerate((('状态', '1'), ('记录', '2'), ('设置', '3'))):
+            item = NavItem(text, key)
+            self.nav_group.addButton(item, index)
+            layout.addWidget(item)
+        self.nav_group.button(PAGE_STATUS).setChecked(True)
         self.nav_group.idClicked.connect(self._select_page)
-        self.nav_slider = SlidingNav(nav, list(self.nav_group.buttons()))
-        row.addWidget(nav)
-        row.addStretch()
-        outer.addLayout(row)
-        self.pages = QStackedWidget()
-        self.pages.setObjectName('pages')
-        outer.addWidget(self.pages, 1)
-        self._build_status()
-        self._build_appearance()
-        self._build_logs()
-        footer = QHBoxLayout()
-        self.notice = label('关闭窗口后仍在托盘守护', 'muted')
-        footer.addWidget(self.notice, 1)
-        footer.addWidget(button('退出', self.exit_application))
-        outer.addLayout(footer)
+        caption = label('快捷操作', 'faint')
+        caption.setContentsMargins(10, 16, 0, 6)
+        layout.addWidget(caption)
+        for text, key, callback in (('立即检测', 'R', self._check_now), ('暂停守护', 'P', self._stop_monitoring), ('重启 UU', 'U', self._restart_uu_now)):
+            item = NavItem(text, key, checkable=False)
+            item.clicked.connect(callback)
+            layout.addWidget(item)
+        layout.addStretch()
+        self.notice = label('关闭窗口后仍在托盘守护', 'faint')
+        self.notice.setWordWrap(True)
+        self.notice.setContentsMargins(10, 0, 6, 0)
+        layout.addWidget(self.notice)
+        foot = QHBoxLayout()
+        foot.setContentsMargins(10, 4, 6, 0)
+        foot.addWidget(label(f'v{__version__}', 'faint'))
+        foot.addStretch()
+        quit_link = QPushButton('退出程序')
+        quit_link.setProperty('link', True)
+        quit_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        quit_link.clicked.connect(self.exit_application)
+        foot.addWidget(quit_link)
+        layout.addLayout(foot)
 
-    def _page(self) -> QVBoxLayout:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+    def _page(self, scroll: bool=False) -> QVBoxLayout:
         content = QWidget()
+        content.setObjectName('page')
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(2, 10, 2, 4)
+        layout.setContentsMargins(0, 0, 4 if scroll else 0, 6)
         layout.setSpacing(12)
-        scroll.setWidget(content)
-        self.pages.addWidget(scroll)
+        if scroll:
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.Shape.NoFrame)
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            area.setWidget(content)
+            self.pages.addWidget(area)
+        else:
+            self.pages.addWidget(content)
         return layout
 
     def _build_status(self) -> None:
         layout = self._page()
-        hero = QHBoxLayout()
-        hero.setContentsMargins(20, 0, 20, 0)
-        hero.addStretch()
-        self.orb = StatusOrb(92)
-        hero.addWidget(self.orb, 0, Qt.AlignmentFlag.AlignVCenter)
-        text = QVBoxLayout()
-        text.setSpacing(8)
-        self.status_title = label('准备连接校园网', 'heroTitle')
-        text.addWidget(self.status_title)
-        self.subtitle = label('选择网络区域，开始自动守护', 'subtitle')
-        text.addWidget(self.subtitle)
-        row = QHBoxLayout()
-        self.status_badge = label('尚未开始', 'badge')
-        self.countdown = label('启动后自动检测网络', 'countdown')
-        row.addWidget(self.status_badge)
-        row.addWidget(self.countdown)
-        row.addStretch()
-        text.addLayout(row)
-        hero.addSpacing(20)
-        hero.addLayout(text)
-        hero.addStretch()
-        layout.addLayout(hero)
+        layout.addStretch(2)
+        self.ring = ProgressRing(250, 10)
+        inner = QVBoxLayout(self.ring)
+        inner.setContentsMargins(24, 0, 24, 0)
+        inner.setSpacing(4)
+        inner.addStretch()
+        self.status_badge = StatusPill('尚未开始')
+        inner.addWidget(self.status_badge, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.status_title = GradientLabel('未开始', 38)
+        inner.addWidget(self.status_title, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.countdown = label('点“开始守护”自动检测网络', 'lead')
+        self.countdown.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        inner.addWidget(self.countdown, 0, Qt.AlignmentFlag.AlignHCenter)
+        inner.addStretch()
+        layout.addWidget(self.ring, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addSpacing(6)
+        tiles = QHBoxLayout()
+        tiles.setSpacing(12)
+        tiles.addStretch()
+        self.rate_tile = StatTile('rate', '—', '今日在线率')
+        self.drop_tile = StatTile('drop', '0 次', '今日掉线')
+        self.uu_tile = StatTile('uu', '—', 'UU 远程连接')
+        for tile in (self.rate_tile, self.drop_tile, self.uu_tile):
+            tiles.addWidget(tile)
+        tiles.addStretch()
+        layout.addLayout(tiles)
+        layout.addSpacing(6)
         row = QHBoxLayout()
         row.addStretch()
         self.check_button = button('开始守护', self._check_now, True)
-        self.check_button.setMinimumWidth(170)
-        self.stop_button = button('暂停守护', self._stop_monitoring)
-        self.stop_button.setMinimumWidth(150)
+        self.check_button.setMinimumWidth(120)
+        self.stop_button = button('暂停', self._stop_monitoring)
+        self.stop_button.setMinimumWidth(84)
         self.stop_button.setEnabled(False)
         row.addWidget(self.check_button)
-        row.addSpacing(10)
+        row.addSpacing(8)
         row.addWidget(self.stop_button)
         row.addStretch()
         layout.addLayout(row)
-        panels = QHBoxLayout()
-        panels.setSpacing(16)
+        self.hover_lifts = [HoverLift(self.check_button), HoverLift(self.stop_button)]
+        self.ticker = Ticker()
+        layout.addWidget(self.ticker)
+        layout.addStretch(3)
+
+    def _build_logs(self) -> None:
+        layout = self._page()
+        head = QHBoxLayout()
+        self.records_title = GradientLabel('运行记录', 34, align=Qt.AlignmentFlag.AlignLeft)
+        head.addWidget(self.records_title)
+        head.addStretch()
+        head.addWidget(button('打开日志目录', self._open_logs))
+        layout.addLayout(head)
+        stats, body = card()
+        body.setSpacing(6)
+        stats_head = QHBoxLayout()
+        stats_head.addWidget(label('掉线统计', 'sectionTitle'))
+        stats_head.addStretch()
+        stats_head.addWidget(button('刷新', self._refresh_stats))
+        body.addLayout(stats_head)
+        self.stats_today = label('—', 'statsToday')
+        self.stats_today.setWordWrap(True)
+        body.addWidget(self.stats_today)
+        self.stats_week = label('—', 'muted')
+        self.stats_week.setWordWrap(True)
+        body.addWidget(self.stats_week)
+        layout.addWidget(stats)
+        logs, body = card()
+        body.addWidget(label('今天的记录（含重启前）· 完整日志按天保留 7 天', 'muted'))
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFrameShape(QFrame.Shape.NoFrame)
+        self.log_text.viewport().setAutoFillBackground(False)
+        body.addWidget(self.log_text, 1)
+        layout.addWidget(logs, 1)
+
+    def _build_settings(self) -> None:
+        layout = self._page(scroll=True)
+        layout.addWidget(GradientLabel('设置', 34, align=Qt.AlignmentFlag.AlignLeft))
+        layout.addWidget(label('主题色和守护选项立即生效；账号密码改完点“保存”。', 'muted'))
+        layout.addSpacing(2)
+        # -- campus network account
         network, form = card()
-        heading = QHBoxLayout()
-        heading.addWidget(label('校园网', 'sectionTitle'))
-        heading.addStretch()
-        heading.addWidget(button('保存设置', self._save_settings))
-        form.addLayout(heading)
+        form.addWidget(label('校园网', 'sectionTitle'))
+        form.addWidget(label('密码用 Windows 加密保存，只有这台电脑上的当前账号能解开', 'muted'))
         grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
+        grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(10)
         self.username = QLineEdit(self.config.username)
-        self.username.setPlaceholderText('校园网账号')
+        self.username.setPlaceholderText('校园网账号（学号/工号）')
         self.password = QLineEdit(self.config.password)
         self.password.setPlaceholderText('统一身份认证密码')
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
@@ -330,7 +394,7 @@ class GuardianApp:
         password_row.setContentsMargins(0, 0, 0, 0)
         password_row.addWidget(self.password)
         self.reveal = button('显示', self._toggle_password)
-        self.reveal.setFixedWidth(60)
+        self.reveal.setFixedWidth(64)
         password_row.addWidget(self.reveal)
         self.zone = QComboBox()
         for name, value in ZONES:
@@ -341,116 +405,74 @@ class GuardianApp:
         self.interval.setSuffix(' 分钟')
         self.interval.setValue(self.config.interval_minutes)
         for row, (name, widget) in enumerate([('账号', self.username), ('密码', None), ('区域', self.zone), ('检测间隔', self.interval)]):
-            grid.addWidget(label(name), row, 0)
+            grid.addWidget(label(name, 'formLabel'), row, 0)
             if widget is not None:
                 grid.addWidget(widget, row, 1)
             else:
                 grid.addLayout(password_row, row, 1)
+        grid.setColumnMinimumWidth(0, 70)
         grid.setColumnStretch(1, 1)
         form.addLayout(grid)
-        panels.addWidget(network, 1)
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(button('保存', self._save_settings, True))
+        form.addLayout(row)
+        layout.addWidget(network)
+        # -- theme colour
+        palette, body = card()
+        body.addWidget(label('主题色', 'sectionTitle'))
+        body.addWidget(label('整个界面的光斑、按钮、标题渐变和光晕都会跟着变', 'muted'))
+        chips = QHBoxLayout()
+        chips.setSpacing(8)
+        self.swatches: list[ColorChip] = []
+        for name, hue in THEME_PRESETS:
+            chip = ColorChip(name, hue)
+            chip.clicked.connect(lambda checked=False, h=hue: self._choose_hue(h))
+            self.swatches.append(chip)
+            chips.addWidget(chip)
+        chips.addStretch()
+        body.addLayout(chips)
+        row = QHBoxLayout()
+        row.addWidget(label('自定义', 'formLabel'))
+        self.hue_slider = HueSlider()
+        self.hue_slider.hueChanged.connect(self._choose_hue)
+        row.addWidget(self.hue_slider, 1)
+        self.hue_value = label('', 'muted')
+        self.hue_value.setFixedWidth(38)
+        row.addWidget(self.hue_value)
+        row.addWidget(button('更多颜色…', self._pick_color))
+        body.addLayout(row)
+        self.appearance_notice = label('', 'muted')
+        body.addWidget(self.appearance_notice)
+        layout.addWidget(palette)
+        # -- guard options
+        options, body = card()
+        body.addWidget(label('守护选项', 'sectionTitle'))
+        self.start_on_launch = Switch('启动后自动守护', self.config.start_on_launch)
+        self.restart_uu = Switch('重连后重启 UU 远程', self.config.restart_uu_remote)
+        self.direct_mode = Switch('检测与认证强制直连（绕过 Clash 等代理）', self.config.direct_mode)
+        self.autostart = Switch('开机启动', self.config.autostart if self.preview else is_autostart_enabled() or self.config.autostart)
+        for switch in (self.start_on_launch, self.restart_uu, self.direct_mode, self.autostart):
+            switch.toggled.connect(self._autosave)
+            body.addWidget(switch)
+        layout.addWidget(options)
+        # -- UU remote
         uu, body = card()
         body.addWidget(label('UU 远程', 'sectionTitle'))
         self.uu_status = label('正在读取授权状态…', 'muted')
         self.uu_status.setWordWrap(True)
         body.addWidget(self.uu_status)
-        self.restart_uu = Switch('重连后重启 UU 远程', self.config.restart_uu_remote)
-        body.addWidget(self.restart_uu)
-        body.addStretch()
+        row = QHBoxLayout()
         self.authorize_button = button('授权完整重启', self._toggle_authorization)
         self.uu_button = button('立即重启', self._restart_uu_now)
-        row = QHBoxLayout()
         row.addWidget(self.authorize_button)
         row.addWidget(self.uu_button)
-        body.addLayout(row)
-        panels.addWidget(uu, 1)
-        layout.addLayout(panels)
-        options, option_layout = card()
-        option_layout.setContentsMargins(18, 10, 18, 10)
-        toggles = QGridLayout()
-        self.autostart = Switch('开机启动', self.config.autostart if self.preview else is_autostart_enabled() or self.config.autostart)
-        self.start_on_launch = Switch('启动后自动守护', self.config.start_on_launch)
-        self.direct_mode = Switch('检测与认证强制直连', self.config.direct_mode)
-        for i, w in enumerate((self.autostart, self.start_on_launch, self.direct_mode)):
-            toggles.addWidget(w, 0, i)
-        option_layout.addLayout(toggles)
-        layout.addWidget(options)
-        recent, body = card()
-        row = QHBoxLayout()
-        row.addWidget(label('最近活动', 'sectionTitle'))
-        row.addStretch()
-        row.addWidget(button('查看全部', lambda: self._select_page(2)))
-        body.addLayout(row)
-        self.recent_lines = [label('—', 'logLine') for _ in range(2)]
-        for line in self.recent_lines:
-            line.setWordWrap(True)
-            body.addWidget(line)
-        layout.addWidget(recent)
-        layout.addStretch()
-
-    def _build_appearance(self) -> None:
-        layout = self._page()
-        heading = QHBoxLayout()
-        self.settings_glyph = Glyph('settings', 66)
-        heading.addWidget(self.settings_glyph)
-        text = QVBoxLayout()
-        text.addWidget(label('外观设置', 'heroTitle'))
-        text.addWidget(label('选择你喜欢的颜色', 'subtitle'))
-        heading.addSpacing(12)
-        heading.addLayout(text)
-        heading.addStretch()
-        layout.addLayout(heading)
-        palette, body = card()
-        body.addWidget(label('主题颜色', 'sectionTitle'))
-        swatches = QHBoxLayout()
-        swatches.setSpacing(12)
-        self.swatches = []
-        for name, color in PRESETS:
-            item = QPushButton(name)
-            item.setMinimumHeight(110)
-            item.setCursor(Qt.CursorShape.PointingHandCursor)
-            item.clicked.connect(lambda checked=False, c=color: self._apply_theme(c))
-            self.swatches.append((item, name, color))
-            swatches.addWidget(item, 1)
-        body.addLayout(swatches)
-        row = QHBoxLayout()
-        row.addWidget(label('自定义颜色'))
-        self.hex_input = QLineEdit()
-        self.hex_input.setMaximumWidth(140)
-        self.hex_input.setMaxLength(7)
-        self.hex_input.setPlaceholderText('#A8C7FA')
-        self.hex_input.editingFinished.connect(self._apply_hex)
-        row.addWidget(self.hex_input)
-        row.addWidget(button('选择颜色…', self._pick_color))
         row.addStretch()
         body.addLayout(row)
-        layout.addWidget(palette)
-        preview, body = card()
-        body.addWidget(label('效果预览', 'sectionTitle'))
-        row = QHBoxLayout()
-        row.addStretch()
-        row.addWidget(Glyph('network', 64))
-        text = QVBoxLayout()
-        text.addWidget(label('校园网已连接', 'sectionTitle'))
-        text.addWidget(label('下次检测将在 3 分钟内进行', 'muted'))
-        row.addLayout(text)
-        example = button('立即检测', lambda: None, True)
-        example.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        example.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        row.addWidget(example)
-        row.addStretch()
-        body.addLayout(row)
-        body.addWidget(label('此区域仅预览外观，不执行网络检测。', 'muted'))
-        layout.addWidget(preview)
+        layout.addWidget(uu)
         layout.addWidget(self._build_data_dir_card())
         layout.addWidget(self._build_log_dir_card())
         layout.addWidget(self._build_cache_card())
-        row = QHBoxLayout()
-        self.appearance_notice = label('选择颜色可即时预览，保存后下次启动生效。', 'muted')
-        row.addWidget(self.appearance_notice, 1)
-        row.addWidget(button('恢复默认', lambda: self._apply_theme(DEFAULT_COLOR)))
-        row.addWidget(button('保存外观', self._save_theme, True))
-        layout.addLayout(row)
         layout.addStretch()
 
     def _build_data_dir_card(self) -> QFrame:
@@ -587,33 +609,6 @@ class GuardianApp:
         if removed:
             self._append_log(text)
 
-    def _build_logs(self) -> None:
-        layout = self._page()
-        row = QHBoxLayout()
-        row.addWidget(label('运行记录', 'heroTitle'))
-        row.addStretch()
-        row.addWidget(button('打开日志目录', self._open_logs))
-        layout.addLayout(row)
-        stats, body = card()
-        body.setSpacing(6)
-        stats_head = QHBoxLayout()
-        stats_head.addWidget(label('掉线统计', 'sectionTitle'))
-        stats_head.addStretch()
-        stats_head.addWidget(button('刷新', self._refresh_stats))
-        body.addLayout(stats_head)
-        self.stats_today = label('—', 'statsToday')
-        self.stats_today.setWordWrap(True)
-        body.addWidget(self.stats_today)
-        self.stats_week = label('—', 'muted')
-        self.stats_week.setWordWrap(True)
-        body.addWidget(self.stats_week)
-        layout.addWidget(stats)
-        layout.addWidget(label('今天的记录（含重启前）· 完整日志按天保留 7 天', 'muted'))
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMinimumHeight(300)
-        layout.addWidget(self.log_text, 1)
-
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(self.icon, self.window)
         self.tray.setToolTip('校园网守护')
@@ -634,60 +629,64 @@ class GuardianApp:
         self.nav_group.button(index).setChecked(True)
         if changed:
             fade_in(self.pages.currentWidget())
-        if index == 2:
+        if index == PAGE_RECORDS:
             self._refresh_stats()
 
-    def _paint_tint(self, color: QColor) -> None:
-        self.surface.tint = QColor(color)
-        self.surface.update()
-        if self.window.isVisible():
-            set_title_bar_color(self.window, surface_top_color(self.surface.tint))
+    # ------------------------------------------------------------------ theme
+    def _stylesheet(self) -> str:
+        pal = THEME.palette
 
-    def _apply_theme(self, color: str, animated: bool=True) -> None:
+        def rgba(c: QColor) -> str:
+            return f'rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})'
+        css = (ASSETS / 'style.qss').read_text(encoding='utf-8-sig')
+        for key, value in (('ACCENT2', pal.a2.name()), ('ACCENT', pal.a.name()), ('DEEP', pal.deep.name()), ('MUTE', pal.mute.name()), ('FAINT', pal.faint.name()),
+                           ('TINT2', rgba(pal.tint2)), ('TINT', rgba(pal.tint)), ('TEXT', pal.text.name()),
+                           ('CHEVRON', (ASSETS / 'chevron.svg').as_posix()), ('UPARROW', (ASSETS / 'up.svg').as_posix())):
+            css = css.replace(key, value)
+        return css
+
+    def _apply_theme(self, color: str, animated: bool=True, hue: int | None=None) -> None:
         color = normalize_color(color)
         self.current_color = color
-        self.tint_tween.go(QColor(color), animated=animated and self.window.isVisible())
-        accent = accent_color(color)
-        self.orb.set_accent(QColor(accent))
-        self.settings_glyph.color = QColor(accent)
-        self.settings_glyph.update()
+        hue = hue_of(color) if hue is None else int(hue) % 360
+        THEME.set_hue(hue)
+        self.window.setStyleSheet(self._stylesheet())
         for switch in self.window.findChildren(AnimatedSwitch):
-            switch.set_accent(QColor(accent))
+            switch.set_accent(THEME.palette.a)
         for lift in getattr(self, 'hover_lifts', []):
-            lift.set_color(QColor(accent).darker(160))
-        self.hex_input.setText(color)
-        css = (ASSETS / 'style.qss').read_text(encoding='utf-8-sig').replace('ACCENT', accent).replace('HOVER', QColor(accent).lighter(115).name()).replace('SWITCHOFF', (ASSETS / 'switch-off.svg').as_posix()).replace('SWITCHON', (ASSETS / 'switch-on.svg').as_posix()).replace('CHEVRON', (ASSETS / 'chevron.svg').as_posix()).replace('UPARROW', (ASSETS / 'up.svg').as_posix())
-        self.window.setStyleSheet(css)
-        for item, name, preset in self.swatches:
-            selected = preset.upper() == color
-            item.setText(name + ('  · 已选' if selected else ''))
-            item.setStyleSheet(f"QPushButton {{background: {preset}; border: {(2 if selected else 1)}px solid {(accent if selected else '#ffffff')}; border-radius: 16px; color: #233149; font-size: 14px; padding-top: 44px;}} QPushButton:hover {{border: 2px solid {accent};}}")
+            lift.set_color(THEME.palette.a.darker(130))
+        for chip in self.swatches:
+            chip.selected = abs((chip.hue - hue + 180) % 360 - 180) <= 2  # hex rounding
+            chip.update()
+        self.hue_slider.set_hue(hue)
+        self.hue_value.setText(f'{hue}°')
+        if self.window.isVisible():
+            set_title_bar_color(self.window, THEME.palette.bg)
 
-            item.setFixedHeight(124)
+    def _theme_frame(self) -> None:
+        """Keep the native title bar in step while the page fades to/from red."""
+        if self.window.isVisible():
+            set_title_bar_color(self.window, THEME.palette.bg)
 
-    def _apply_hex(self) -> bool:
-        try:
-            self._apply_theme(self.hex_input.text())
-            return True
-        except ValueError as exc:
-            self.appearance_notice.setText(str(exc))
-            return False
+    def _choose_hue(self, hue: int) -> None:
+        self._apply_theme(accent_for_hue(hue), hue=hue)
+        self._save_theme()
 
     def _pick_color(self) -> None:
         color = QColorDialog.getColor(QColor(self.current_color), self.window, '自定义主题颜色')
         if color.isValid():
             self._apply_theme(color.name())
+            self._save_theme()
 
     def _save_theme(self) -> None:
-        if not self._apply_hex():
-            return
         try:
             self.theme_store.save(self.current_color)
             self.saved_color = self.current_color
-            self.appearance_notice.setText('外观已保存，下次启动自动使用。')
+            self.appearance_notice.setText('')
         except OSError as exc:
-            self._error('无法保存外观', str(exc))
+            self.appearance_notice.setText(f'无法保存主题色：{exc}')
 
+    # ------------------------------------------------------------------ settings
     def _read_form(self) -> AppConfig:
         config = AppConfig(username=self.username.text(), password=self.password.text(), zone=self.zone.currentData(), interval_minutes=self.interval.value(), autostart=self.autostart.isChecked(), start_on_launch=self.start_on_launch.isChecked(), direct_mode=self.direct_mode.isChecked(), restart_uu_remote=self.restart_uu.isChecked())
         config.validate()
@@ -709,11 +708,27 @@ class GuardianApp:
             if not quiet:
                 self._append_log(f'设置已保存并立即生效（检测间隔 {config.interval_minutes} 分钟）' if running else '设置已安全保存')
             self.notice.setText('设置已保存并已生效' if running else '设置已保存')
+            self._refresh_island()
             return True
         except (ValueError, OSError) as exc:
             self._error('无法保存', str(exc))
             return False
 
+    def _autosave(self, *_args) -> None:
+        """Switches apply at once; without an account yet they wait for “保存”."""
+        try:
+            self._read_form()
+        except ValueError:
+            self.notice.setText('填写账号密码并保存后，选项一起生效')
+            return
+        self._save_settings(quiet=True)
+
+    def _toggle_password(self) -> None:
+        visible = self.password.echoMode() == QLineEdit.EchoMode.Password
+        self.password.setEchoMode(QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password)
+        self.reveal.setText('隐藏' if visible else '显示')
+
+    # ------------------------------------------------------------------ actions
     def _check_now(self) -> None:
         if self.preview or self.is_exiting:
             return
@@ -725,21 +740,22 @@ class GuardianApp:
         elif self._save_settings(quiet=True):
             self.active_interval = self.config.interval_minutes
             self.monitor.start(self.config)
-            self.check_button.setText('立即检测')
-            self.stop_button.setEnabled(True)
-            self.subtitle.setText(self.zone.currentText() + ' · ' + ('认证强制直连' if self.config.direct_mode else '常规连接'))
+            self._set_running_buttons(True)
             self._append_log(f'开始监控，间隔 {self.active_interval} 分钟')
 
     def _stop_monitoring(self) -> None:
+        if not self.monitor.running:
+            return
         self.monitor.stop()
         self.stop_button.setEnabled(False)
         self.next_check = None
         self.countdown.setText('正在停止，请稍候…')
 
-    def _toggle_password(self) -> None:
-        visible = self.password.echoMode() == QLineEdit.EchoMode.Password
-        self.password.setEchoMode(QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password)
-        self.reveal.setText('隐藏' if visible else '显示')
+    def _set_running_buttons(self, running: bool) -> None:
+        self.check_button.setText('立即检测' if running else '开始守护')
+        self.island.check_button.setText('立即检测' if running else '开始守护')
+        self.stop_button.setEnabled(running)
+        self.island.pause_button.setEnabled(running)
 
     def _background(self, operation, kind: str) -> None:
         if self.busy or self.is_exiting:
@@ -760,6 +776,18 @@ class GuardianApp:
 
     def _refresh_uu_status_async(self) -> None:
         self._background(lambda: (uu_remote.describe_status(), uu_remote.elevated_task_exists()), 'uu-status')
+
+    def _refresh_uu_connections(self) -> None:
+        """Count UU's server connections in the background (netstat is slow)."""
+        if self.preview or self.is_exiting:
+            return
+
+        def work() -> None:
+            try:
+                self.events.put(('uu-conn', uu_remote.online_connections()))
+            except Exception:
+                self.events.put(('uu-conn', None))
+        threading.Thread(target=work, daemon=True, name='guardian-uu-count').start()
 
     def _toggle_authorization(self) -> None:
         if self.preview:
@@ -786,6 +814,7 @@ class GuardianApp:
             return
         self._background(lambda: uu_remote.restart_and_verify(lambda message: self.events.put(('log', message))), 'uu-result')
 
+    # ------------------------------------------------------------------ status
     def _refresh_stats(self) -> None:
         today = dt.date.today()
         days = [today - dt.timedelta(days=offset) for offset in range(7)]
@@ -794,6 +823,36 @@ class GuardianApp:
         week = [f"{item.day:%m-%d} {item.count} 次 / {format_duration(item.total_seconds)}" for item in results[1:] if item.count]
         total = sum(item.count for item in results)
         self.stats_week.setText(('近 7 天共掉线 %d 次。' % total) + ('之前几天：' + '；'.join(week) if week else '之前 6 天都没有掉线记录。'))
+        day = results[0]
+        midnight = dt.datetime.combine(today, dt.time())
+        elapsed = max(60.0, (dt.datetime.now() - midnight).total_seconds())
+        rate = max(0.0, 100.0 * (1 - day.total_seconds / elapsed))
+        self.rate_tile.set(f'{rate:.1f}%' if rate < 99.95 else '100%')
+        self.drop_tile.set(f'{day.count} 次', f'今日掉线 · 共 {format_duration(day.total_seconds)}' if day.count else '今日掉线')
+
+    def _uu_text(self) -> str:
+        if self.uu_connections is None:
+            return 'UU 状态未知'
+        return f'UU 在线 {self.uu_connections} 条连接' if self.uu_connections else 'UU 未连上服务器'
+
+    def _zone_text(self) -> str:
+        return ZONE_SHORT.get(self.config.zone, '教学/办公区')
+
+    def _refresh_island(self) -> None:
+        state = self.last_network_state
+        alert = state == 'offline'
+        status = {'online': '在线 · 守护中', 'offline': '已断开 · 重连中'}.get(state, '处理中')
+        if state == 'stopped':
+            status = '已暂停' if self.ever_started else '未开始'
+        subtitle = f"{self._zone_text()} · {'强制直连' if self.config.direct_mode else '常规连接'} · {self._uu_text()}"
+        title = self.island_title if hasattr(self, 'island_title') else '校园网守护'
+        self.island.set_state(status=status, title=title, subtitle=subtitle, alert=alert)
+
+    def _set_idle_state(self) -> None:
+        self.island_title = '尚未开始守护' if not self.config.username else '守护已暂停'
+        self.status_badge.set_dot(QColor('#9AA8B8'))
+        self._set_running_buttons(False)
+        self._refresh_island()
 
     NETWORK_TRIGGER_GAP = 20.0
 
@@ -821,10 +880,16 @@ class GuardianApp:
             kind, value = event
             if kind == 'uu-status':
                 status, authorized = value
+                self.uu_authorized = authorized
                 self.uu_status.setText(status)
                 self.authorize_button.setText('取消授权' if authorized else '授权完整重启')
+            elif kind == 'uu-conn':
+                self.uu_connections = value
+                self.uu_tile.set('—' if value is None else f'{value} 条', 'UU 远程连接' if value else ('未连上服务器' if value == 0 else 'UU 远程未运行'))
+                self._refresh_island()
             elif kind == 'uu-result':
                 self._append_log(value.message, value.level)
+                QTimer.singleShot(5000, self._refresh_uu_connections)
             elif kind == 'error':
                 self._append_log('UU 操作失败：' + value, 'error')
                 self.uu_status.setText('操作失败，请查看运行记录')
@@ -839,6 +904,7 @@ class GuardianApp:
 
     def _apply_event(self, event: MonitorEvent) -> None:
         titles = {'checking': '正在检测网络', 'reconnecting': '正在重新连接', 'restarting': '正在重启 UU 远程', 'online': '校园网已连接', 'offline': '校园网连接异常', 'stopped': '守护已暂停'}
+        short = {'checking': '检测中', 'reconnecting': '重连中', 'restarting': '重启 UU', 'online': '已连接', 'offline': '已断开', 'stopped': '已暂停'}
         # Routine lines stay in the on-screen activity list but are folded
         # into an hourly summary in the log file.
         for line in self.log_filter.lines_to_write(event.state, event.message, event.level, event.latency_ms):
@@ -847,41 +913,67 @@ class GuardianApp:
             # Diagnostic line only: record it without touching the status card.
             self._append_log(event.message, event.level, persist=False)
             return
-        self.orb.set_state(event.state)
-        tray_state = 'busy' if event.state in ('checking', 'reconnecting', 'restarting') else event.state
+        tray_state = 'busy' if event.state in BUSY_STATES else event.state
         if tray_state in self.TRAY_COLORS:
             self.tray.setIcon(self._tray_icon(tray_state))
         if event.state == 'waiting':
             delay = event.next_in_seconds if event.next_in_seconds is not None else getattr(self, 'active_interval', self.config.interval_minutes) * 60
             self.next_check = time.time() + delay
-            self.orb.set_countdown(time.time(), self.next_check)
-            self.status_badge.setText('正在守护' if self.last_network_state != 'offline' else '等待重试')
+            self.wait_total = max(1.0, float(delay))
+            self.ring.set_busy(False)
+            offline = self.last_network_state == 'offline'
+            self.status_badge.setText('等待重试' if offline else f'守护中 · {self._zone_text()}')
+            self.status_badge.set_dot(BAD_COLOR if offline else OK_COLOR)
             self._update_countdown()
         else:
             self.next_check = None
-            self.status_title.setText(titles.get(event.state, '校园网守护'))
+            previous = self.last_network_state
+            if event.state != 'stopped':
+                self.ever_started = True
+            self.status_title.setText(short.get(event.state, '守护中'))
+            self.island_title = titles.get(event.state, '校园网守护')
+            self.ring.set_busy(event.state in BUSY_STATES)
+            if event.state in BUSY_STATES:
+                self.status_badge.set_dot(WARN_COLOR)
             self.status_badge.setText({'online': '连接正常', 'offline': '连接异常', 'stopped': '已暂停'}.get(event.state, '正在处理'))
-            self.countdown.setText('启动后继续自动检测' if event.state == 'stopped' else f'检测耗时 {event.latency_ms} ms' if event.latency_ms is not None else '请稍候…')
-            if event.state in ('online', 'offline', 'stopped'):
-                if event.state != self.last_network_state:
-                    QTimer.singleShot(0, self._refresh_stats)
-                self.last_network_state = event.state
-            self.status_badge.setStyleSheet('color:#9c3e32;background:rgba(255,205,195,170);' if event.state == 'offline' else '')
             if event.state == 'stopped':
-                self.check_button.setText('开始守护')
-                self.stop_button.setEnabled(False)
+                self.countdown.setText('点“开始守护”继续自动检测')
+                self.ring.set_fraction(0.0, animated=True)
+                self.status_badge.set_dot(QColor('#9AA8B8'))
+            else:
+                self.countdown.setText(f'检测耗时 {event.latency_ms} ms' if event.latency_ms is not None else '请稍候…')
+            if event.state in ('online', 'offline', 'stopped'):
+                if event.state != previous:
+                    QTimer.singleShot(0, self._refresh_stats)
+                    if event.state in ('online', 'offline') and previous in ('online', 'offline'):
+                        self.island.pop(3600 if event.state == 'offline' else 2400)
+                self.last_network_state = event.state
+                self.status_title.alert = event.state == 'offline'
+                self.status_title.update()
+                THEME.set_down(event.state == 'offline', animated=self.window.isVisible())
+                if event.state == 'online':
+                    self.status_badge.set_dot(OK_COLOR)
+                elif event.state == 'offline':
+                    self.status_badge.set_dot(BAD_COLOR)
+            if event.state == 'stopped':
+                self._set_running_buttons(False)
             self._append_log(event.message, event.level, persist=False)
-        self.tray.setToolTip('校园网守护 · ' + self.status_title.text())
+        self._refresh_island()
+        self.tray.setToolTip('校园网守护 · ' + self.island_title)
 
     def _update_countdown(self) -> None:
-        if self.next_check is not None:
-            remaining = max(0, self.next_check - time.time())
-            if remaining <= 0:
-                self.countdown.setText('即将进行下一次检测')
-            elif self.last_network_state == 'offline':
-                self.countdown.setText(f'{math.ceil(remaining)} 秒后复查')
-            else:
-                self.countdown.setText(f'下次检测将在 {math.ceil(remaining / 60)} 分钟内进行')
+        if self.next_check is None:
+            return
+        remaining = max(0.0, self.next_check - time.time())
+        total = self.wait_total or max(remaining, 1.0)
+        if remaining <= 0:
+            self.countdown.setText('即将进行下一次检测')
+        elif self.last_network_state == 'offline':
+            self.countdown.setText(f'{math.ceil(remaining)} 秒后复查')
+        else:
+            self.countdown.setText(f'{clock(remaining)} 后再次检测')
+        self.ring.set_fraction(remaining / total)
+        self.island.set_countdown(clock(remaining), remaining / total)
 
     def _append_log(self, message: str, level: str='info', persist: bool=True) -> None:
         if persist:
@@ -892,8 +984,16 @@ class GuardianApp:
             self.log_entries.popleft()
         self.log_text.setPlainText('\n'.join((f'{stamp:%H:%M:%S}   {text}' for stamp, text in self.log_entries)))
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
-        for index, (stamp, text) in enumerate(reversed(list(self.log_entries)[-2:])):
-            self.recent_lines[index].setText(f'{stamp:%H:%M:%S}    {text}')
+        recent = [(stamp, text) for stamp, text in self.log_entries if not text.startswith('运行正常')][-4:]
+        self.ticker.set_items([(f'{stamp:%H:%M}　{text}', self._event_color(text)) for stamp, text in reversed(recent)])
+
+    @staticmethod
+    def _event_color(text: str) -> QColor:
+        if any(word in text for word in BAD_WORDS):
+            return BAD_COLOR
+        if any(word in text for word in GOOD_WORDS):
+            return OK_COLOR
+        return THEME.palette.faint
 
     def _initial_start(self) -> None:
         if (self.launched_by_autostart or self.config.start_on_launch) and self.config.username and self.config.password:
