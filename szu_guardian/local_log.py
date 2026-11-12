@@ -43,6 +43,16 @@ class LocalLog:
         limit: int = 2000,
     ) -> list[tuple[dt.datetime, str]]:
         """Entries of one day's log file, oldest first (at most ``limit``)."""
+        return [
+            (stamp, message)
+            for stamp, _level, message in self.read_entries(day)[-limit:]
+        ]
+
+    def read_entries(
+        self,
+        day: dt.date | None = None,
+    ) -> list[tuple[dt.datetime, str, str]]:
+        """(time, LEVEL, message) for every line of one day's log file."""
         day = day or dt.date.today()
         path = self.directory / f"guardian-{day:%Y-%m-%d}.log"
         try:
@@ -51,15 +61,16 @@ class LocalLog:
         except OSError:
             return []
         entries = []
-        for line in lines[-limit:]:
+        for line in lines:
             try:
                 stamp = dt.datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 continue
             message = line[20:]
+            level = "INFO"
             if message.startswith("[") and "] " in message:
-                message = message.split("] ", 1)[1]
-            entries.append((stamp, message))
+                level, message = message[1:].split("] ", 1)
+            entries.append((stamp, level, message))
         return entries
 
     def cleanup(self, now: dt.datetime | None = None) -> None:

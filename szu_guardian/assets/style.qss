@@ -7,6 +7,7 @@ QLabel#heroTitle { font-size: 27px; font-weight: 600; }
 QLabel#sectionTitle { font-size: 18px; font-weight: 600; }
 QLabel#subtitle { font-size: 14px; color: #526078; }
 QLabel#muted, QLabel#logLine { color: #59657b; font-size: 12px; }
+QLabel#statsToday { font-size: 14px; color: #202b3f; }
 QLabel#badge { color: #28774a; background: rgba(180,229,198,140); border-radius: 7px; padding: 4px 10px; }
 QLabel#countdown { color: #4d5c74; background: rgba(255,255,255,95); border: 1px solid rgba(255,255,255,160); border-radius: 9px; padding: 5px 10px; font-size: 12px; }
 QFrame#glassCard { background: rgba(255,255,255,72); border: 1px solid rgba(255,255,255,190); border-radius: 17px; }

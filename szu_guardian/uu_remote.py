@@ -669,3 +669,124 @@ def restart_uu_remote(
         True,
         f"UU 远程主程序已重启（{service_detail}，后台服务未重启）",
     )
+
+
+# --- Online check -----------------------------------------------------------
+# UU Remote exposes no status API.  When it is online, GameViewerServer.exe
+# keeps TLS connections to NetEase servers (seen as several ESTABLISHED TCP
+# connections to port 443).  "No such connection for a minute after a
+# restart" is therefore used as the sign that it did not come back.
+ONLINE_IMAGE = "GameViewerServer.exe"
+ONLINE_TIMEOUT_SECONDS = 60.0
+ONLINE_POLL_SECONDS = 3.0
+
+
+def _is_external(address: str) -> bool:
+    import ipaddress
+
+    host = address.rsplit(":", 1)[0].strip("[]")
+    try:
+        parsed = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if parsed.is_loopback or parsed.is_unspecified or parsed.is_link_local:
+        return False
+    # 198.18.0.0/15 is a proxy's fake-IP range: traffic still leaves the PC.
+    if parsed in ipaddress.ip_network("198.18.0.0/15"):
+        return True
+    return not parsed.is_private
+
+
+def _image_pids(image: str) -> set[int]:
+    code, output = _run(
+        [_system_tool("tasklist.exe"), "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"]
+    )
+    pids = set()
+    if code != 0:
+        return pids
+    for line in output.splitlines():
+        parts = [part.strip('"') for part in line.split('","')]
+        if len(parts) > 1 and parts[0].strip('"').lower() == image.lower():
+            try:
+                pids.add(int(parts[1].strip('"')))
+            except ValueError:
+                continue
+    return pids
+
+
+def parse_established(netstat_output: str, pids: set[int]) -> int:
+    """Count ESTABLISHED TCP connections to outside hosts owned by ``pids``."""
+    count = 0
+    for line in netstat_output.splitlines():
+        fields = line.split()
+        if len(fields) != 5 or fields[0].upper() != "TCP" or fields[3].upper() != "ESTABLISHED":
+            continue
+        try:
+            pid = int(fields[4])
+        except ValueError:
+            continue
+        if pid in pids and _is_external(fields[2]):
+            count += 1
+    return count
+
+
+def online_connections() -> int | None:
+    """External connections of UU's server process; None when it isn't running."""
+    pids = _image_pids(ONLINE_IMAGE)
+    if not pids:
+        return None
+    code, output = _run([_system_tool("netstat.exe"), "-ano", "-p", "TCP"])
+    if code != 0:
+        return None
+    return parse_established(output, pids)
+
+
+def wait_until_online(
+    sleeper: Callable[[float], None] = time.sleep,
+    timeout: float = ONLINE_TIMEOUT_SECONDS,
+    probe: Callable[[], int | None] = online_connections,
+) -> int | None:
+    """Wait for UU to reach its servers; return the connection count (0 = not
+    online in time, None = cannot tell because the process never appeared)."""
+    deadline = time.monotonic() + timeout
+    seen_process = False
+    while True:
+        count = probe()
+        if count:
+            return count
+        seen_process = seen_process or count is not None
+        if time.monotonic() >= deadline:
+            return 0 if seen_process else None
+        sleeper(ONLINE_POLL_SECONDS)
+
+
+def restart_and_verify(
+    progress_callback: ProgressCallback | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
+    restarter: Callable[..., RestartResult] | None = None,
+    waiter: Callable[..., int | None] | None = None,
+) -> RestartResult:
+    """Restart UU Remote, confirm it is online, and retry once if it is not."""
+    restarter = restarter or restart_uu_remote
+    waiter = waiter or wait_until_online
+    result = restarter(progress_callback, sleeper)
+    for attempt in (1, 2):
+        if not result.success:
+            return result
+        if progress_callback:
+            progress_callback("正在确认 UU 远程是否已上线…")
+        connections = waiter(sleeper)
+        if connections:
+            suffix = "，已确认上线" if attempt == 1 else "，第二次重启后已确认上线"
+            return RestartResult(True, f"{result.message}{suffix}（{connections} 条服务器连接）")
+        if connections is None:
+            return RestartResult(True, f"{result.message}（未找到 {ONLINE_IMAGE}，无法确认是否上线）", "warning")
+        if attempt == 1:
+            if progress_callback:
+                progress_callback(f"UU 远程 {ONLINE_TIMEOUT_SECONDS:g} 秒内没有连上服务器，再重启一次…")
+            result = restarter(progress_callback, sleeper)
+    return RestartResult(
+        False,
+        f"UU 远程重启两次后仍未连上服务器，请手动检查（{result.message}）",
+        "warning",
+    )

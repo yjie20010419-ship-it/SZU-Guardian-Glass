@@ -21,6 +21,8 @@ from .startup import is_autostart_enabled, set_autostart
 from .local_log import LocalLog
 from .log_policy import RoutineLogFilter
 from .runtime_environment import sanitize_external_environment
+from .net_watch import AddressChangeWatcher
+from .outage_stats import compute_day, describe, format_duration
 from .motion import AnimatedSwitch, ColorTween, HoverLift, SlidingNav, StatusOrb, blend, fade_in, set_title_bar_color, surface_top_color
 ZONES = [('教学 / 办公区（实验室）', ZONE_OFFICE), ('宿舍区', ZONE_DORMITORY), ('自动尝试（实验性）', ZONE_AUTO)]
 ASSETS = Path(__file__).resolve().parent / 'assets'
@@ -152,7 +154,7 @@ class GuardianApp:
         self.saved_color = self.theme_store.load()
         self.current_color = self.saved_color
         self.events = queue.Queue()
-        self.monitor = MonitorController(self.events.put, uu_restarter=uu_remote.restart_uu_remote)
+        self.monitor = MonitorController(self.events.put, uu_restarter=uu_remote.restart_and_verify)
         self.local_log = LocalLog(store.path.parent / 'logs')
         self.log_filter = RoutineLogFilter()
         self.log_entries = deque()
@@ -184,7 +186,11 @@ class GuardianApp:
         # Show what was logged earlier today, so a restart keeps the history.
         self.log_entries.extend(self.local_log.read_day(limit=self.LOG_VIEW_LIMIT))
         self._append_log('程序已启动')
+        self._refresh_stats()
+        self.last_network_trigger = 0.0
+        self.net_watch = AddressChangeWatcher(lambda: self.events.put(('netchange', None)))
         if not preview:
+            self.net_watch.start()
             self._refresh_uu_status_async()
             QTimer.singleShot(300, self._initial_start)
 
@@ -486,10 +492,24 @@ class GuardianApp:
         row.addStretch()
         row.addWidget(button('打开日志目录', self._open_logs))
         layout.addLayout(row)
+        stats, body = card()
+        body.setSpacing(6)
+        stats_head = QHBoxLayout()
+        stats_head.addWidget(label('掉线统计', 'sectionTitle'))
+        stats_head.addStretch()
+        stats_head.addWidget(button('刷新', self._refresh_stats))
+        body.addLayout(stats_head)
+        self.stats_today = label('—', 'statsToday')
+        self.stats_today.setWordWrap(True)
+        body.addWidget(self.stats_today)
+        self.stats_week = label('—', 'muted')
+        self.stats_week.setWordWrap(True)
+        body.addWidget(self.stats_week)
+        layout.addWidget(stats)
         layout.addWidget(label('今天的记录（含重启前）· 完整日志按天保留 7 天', 'muted'))
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMinimumHeight(390)
+        self.log_text.setMinimumHeight(300)
         layout.addWidget(self.log_text, 1)
 
     def _build_tray(self) -> None:
@@ -512,6 +532,8 @@ class GuardianApp:
         self.nav_group.button(index).setChecked(True)
         if changed:
             fade_in(self.pages.currentWidget())
+        if index == 2:
+            self._refresh_stats()
 
     def _paint_tint(self, color: QColor) -> None:
         self.surface.tint = QColor(color)
@@ -660,7 +682,30 @@ class GuardianApp:
             return
         if QMessageBox.question(self.window, '重启 UU 远程', '将结束并重新启动 UU 远程，当前远程连接会中断。是否继续？') != QMessageBox.StandardButton.Yes:
             return
-        self._background(lambda: uu_remote.restart_uu_remote(lambda message: self.events.put(('log', message))), 'uu-result')
+        self._background(lambda: uu_remote.restart_and_verify(lambda message: self.events.put(('log', message))), 'uu-result')
+
+    def _refresh_stats(self) -> None:
+        today = dt.date.today()
+        days = [today - dt.timedelta(days=offset) for offset in range(7)]
+        results = [compute_day(day, self.local_log.read_entries(day)) for day in days]
+        self.stats_today.setText(describe(results[0], '今天'))
+        week = [f"{item.day:%m-%d} {item.count} 次 / {format_duration(item.total_seconds)}" for item in results[1:] if item.count]
+        total = sum(item.count for item in results)
+        self.stats_week.setText(('近 7 天共掉线 %d 次。' % total) + ('之前几天：' + '；'.join(week) if week else '之前 6 天都没有掉线记录。'))
+
+    NETWORK_TRIGGER_GAP = 20.0
+
+    def _on_network_change(self) -> None:
+        """The PC's addresses changed: check now instead of waiting."""
+        if self.is_exiting or not self.monitor.running:
+            return
+        now = time.monotonic()
+        if now - self.last_network_trigger < self.NETWORK_TRIGGER_GAP:
+            return
+        self.last_network_trigger = now
+        self._append_log('检测到网卡地址变化，立即检测')
+        self.monitor.check_now()
+        self.next_check = None
 
     def _poll(self) -> None:
         while True:
@@ -683,6 +728,8 @@ class GuardianApp:
                 self.uu_status.setText('操作失败，请查看运行记录')
             elif kind == 'log':
                 self._append_log(value)
+            elif kind == 'netchange':
+                self._on_network_change()
             elif kind == 'idle':
                 self.busy = False
                 self.authorize_button.setEnabled(True)
@@ -713,6 +760,8 @@ class GuardianApp:
             self.status_badge.setText({'online': '连接正常', 'offline': '连接异常', 'stopped': '已暂停'}.get(event.state, '正在处理'))
             self.countdown.setText('启动后继续自动检测' if event.state == 'stopped' else f'检测耗时 {event.latency_ms} ms' if event.latency_ms is not None else '请稍候…')
             if event.state in ('online', 'offline', 'stopped'):
+                if event.state != self.last_network_state:
+                    QTimer.singleShot(0, self._refresh_stats)
                 self.last_network_state = event.state
             self.status_badge.setStyleSheet('color:#9c3e32;background:rgba(255,205,195,170);' if event.state == 'offline' else '')
             if event.state == 'stopped':
@@ -795,6 +844,7 @@ class GuardianApp:
         if self.monitor.running or self.busy:
             QTimer.singleShot(200, self._finish_exit)
             return
+        self.net_watch.stop()
         self.tray.hide()
         for line in self.log_filter.lines_to_write('stopped', '程序退出'):
             self.local_log.write(line)
