@@ -52,17 +52,35 @@ def default_cache_dir() -> Path:
     return local_cache_dir()
 
 
-def registered_cache_dir() -> Path | None:
+def read_user_env(name: str) -> str | None:
+    """A per-user environment variable as stored in HKCU\\Environment."""
     if sys.platform != "win32":
         return None
     import winreg
 
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            value, _ = winreg.QueryValueEx(key, ENV_NAME)
+            value, _ = winreg.QueryValueEx(key, name)
     except OSError:
         return None
     value = str(value).strip()
+    return value or None
+
+
+def write_user_env(name: str, value: str) -> None:
+    """Persist a per-user environment variable and tell running programs."""
+    os.environ[name] = value
+    if sys.platform != "win32":
+        return
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+    _broadcast_environment_change()
+
+
+def registered_cache_dir() -> Path | None:
+    value = read_user_env(ENV_NAME)
     return Path(value) if value else None
 
 
@@ -72,7 +90,7 @@ def validate_cache_dir(value: str | os.PathLike[str]) -> Path:
     if not text:
         raise ValueError("请填写文件夹路径")
     if "%" in text:
-        raise ValueError("缓存路径里不能包含 %")
+        raise ValueError("路径里不能包含 %")
     path = Path(text)
     if not path.is_absolute() or not path.drive:
         raise ValueError("请填写带盘符的完整路径，例如 E:\\Apps\\Logs\\SZU-Guardian")
@@ -103,13 +121,7 @@ def _broadcast_environment_change() -> None:
 
 
 def register_cache_dir(path: Path) -> None:
-    if sys.platform != "win32":
-        return
-    import winreg
-
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as key:
-        winreg.SetValueEx(key, ENV_NAME, 0, winreg.REG_SZ, str(path))
-    _broadcast_environment_change()
+    write_user_env(ENV_NAME, str(path))
 
 
 def set_cache_dir(value: str | os.PathLike[str]) -> Path:

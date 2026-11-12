@@ -7,8 +7,6 @@ import shutil
 import threading
 from pathlib import Path
 
-from .storage import default_config_path
-
 
 LOG_RETENTION_DAYS = 7
 LOG_GLOB = "guardian-*.log"
@@ -16,8 +14,13 @@ LOCATION_FILE = "log_location.json"
 
 
 def legacy_log_directory(data_dir: Path | None = None) -> Path:
-    """Where logs lived before the folder became configurable."""
-    return (data_dir or default_config_path().parent) / "logs"
+    """``logs`` inside a settings folder; by default the original location
+    %LOCALAPPDATA%\\SZUNetworkGuardian\\logs used before v1.0.1."""
+    if data_dir is None:
+        from .data_dir import legacy_data_dir
+
+        data_dir = legacy_data_dir()
+    return data_dir / "logs"
 
 
 def default_log_directory(data_dir: Path | None = None) -> Path:

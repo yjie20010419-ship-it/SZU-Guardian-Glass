@@ -62,6 +62,15 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         startup_notes.append(f"缓存文件夹检查失败：{exc}")
 
+    from szu_guardian import data_dir
+
+    try:
+        settings_dir, moved = data_dir.ensure_data_dir()
+        if moved:
+            startup_notes.append(f"已把设置文件（{'、'.join(moved)}）移到 {settings_dir}")
+    except (OSError, ValueError) as exc:
+        startup_notes.append(f"配置文件夹检查失败：{exc}")
+
     app = GuardianApp(ConfigStore(), launched_by_autostart=args.autostart)
     guard.listen(lambda message: app.handle_instance_message(message))
     for note in startup_notes:

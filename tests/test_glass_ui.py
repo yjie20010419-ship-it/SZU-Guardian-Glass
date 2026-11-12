@@ -151,6 +151,23 @@ class InterfaceTests(unittest.TestCase):
         finally:
             app.local_log.move_to(original)
 
+    def test_settings_folder_can_be_changed_and_files_follow(self):
+        app = self.app
+        original = app.data_dir
+        (original / 'appearance.json').write_text('{"color": "#A8C7FA"}', encoding='utf-8')
+        target = Path(self.temp.name) / 'Apps' / 'Config' / 'SZU-Guardian'
+        try:
+            app.data_dir_input.setText(str(target))
+            app._apply_data_dir()
+            self.assertEqual(app.data_dir, target)
+            self.assertEqual(app.store.path, target / 'config.json')
+            self.assertEqual(app.theme_store.path, target / 'appearance.json')
+            self.assertTrue((target / 'appearance.json').exists())
+            self.assertIn('已改为', app.data_dir_notice.text())
+        finally:
+            app.data_dir_input.setText(str(original))
+            app._apply_data_dir()
+
     def test_monitor_button_routes_to_existing_controller(self):
         app = self.app
         with patch.object(app, 'monitor') as monitor, patch.object(app, '_save_settings', return_value=True):

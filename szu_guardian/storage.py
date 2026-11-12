@@ -94,13 +94,9 @@ def unprotect_secret(encoded: str) -> str:
 
 
 def default_config_path() -> Path:
-    override = os.environ.get("SZU_GUARDIAN_DATA_DIR")
-    if override:
-        return Path(override) / "config.json"
-    base = os.environ.get("LOCALAPPDATA")
-    if base:
-        return Path(base) / APP_DIRECTORY / "config.json"
-    return Path.home() / f".{APP_DIRECTORY}" / "config.json"
+    from .data_dir import current_data_dir
+
+    return current_data_dir() / "config.json"
 
 
 class ConfigStore:

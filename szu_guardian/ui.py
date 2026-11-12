@@ -18,7 +18,9 @@ from .models import AppConfig, ZONE_AUTO, ZONE_OFFICE, ZONE_DORMITORY
 from .monitor import MonitorController, MonitorEvent
 from .storage import ConfigStore
 from .startup import is_autostart_enabled, set_autostart
-from .local_log import LocalLog, chosen_log_directory, legacy_log_directory, migrate_logs, save_log_location
+from .local_log import LocalLog, LOCATION_FILE, chosen_log_directory, legacy_log_directory, migrate_logs, save_log_location
+from . import data_dir as data_location
+from .data_dir import legacy_data_dir, remove_if_empty
 from .log_policy import RoutineLogFilter
 from .runtime_environment import sanitize_external_environment
 from .net_watch import AddressChangeWatcher
@@ -156,7 +158,8 @@ class GuardianApp:
         self.events = queue.Queue()
         self.monitor = MonitorController(self.events.put, uu_restarter=uu_remote.restart_and_verify)
         self.data_dir = store.path.parent
-        legacy_logs = legacy_log_directory(self.data_dir)
+        # Preview/tests keep everything inside their temporary data folder.
+        legacy_logs = legacy_log_directory(self.data_dir if preview else None)
         log_dir = legacy_logs if preview else chosen_log_directory(self.data_dir)
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -164,6 +167,8 @@ class GuardianApp:
             log_dir = legacy_logs  # e.g. the chosen drive is gone
         # Logs written before the folder became configurable follow it there.
         self.migrated_logs = migrate_logs(legacy_logs, log_dir) if log_dir != legacy_logs else 0
+        if not preview and legacy_data_dir() != self.data_dir:
+            remove_if_empty(legacy_data_dir())  # nothing left on C: once moved
         self.local_log = LocalLog(log_dir)
         self.log_filter = RoutineLogFilter()
         self.log_entries = deque()
@@ -432,6 +437,7 @@ class GuardianApp:
         body.addLayout(row)
         body.addWidget(label('此区域仅预览外观，不执行网络检测。', 'muted'))
         layout.addWidget(preview)
+        layout.addWidget(self._build_data_dir_card())
         layout.addWidget(self._build_log_dir_card())
         layout.addWidget(self._build_cache_card())
         row = QHBoxLayout()
@@ -441,6 +447,51 @@ class GuardianApp:
         row.addWidget(button('保存外观', self._save_theme, True))
         layout.addLayout(row)
         layout.addStretch()
+
+    def _build_data_dir_card(self) -> QFrame:
+        frame, body = card()
+        body.addWidget(label('配置文件夹', 'sectionTitle'))
+        body.addWidget(label('账号（密码已加密）、外观和日志位置等设置保存在这里。修改后立即生效，现有设置会一起移过去。', 'muted'))
+        row = QHBoxLayout()
+        self.data_dir_input = QLineEdit(str(self.data_dir))
+        row.addWidget(self.data_dir_input, 1)
+        row.addWidget(button('浏览…', lambda: self._browse_into(self.data_dir_input, '选择配置文件夹')))
+        row.addWidget(button('打开', lambda: self._open_folder(self.data_dir, self.data_dir_notice)))
+        row.addWidget(button('应用', self._apply_data_dir, True))
+        body.addLayout(row)
+        self.data_dir_notice = label(f'当前位置：{self.data_dir}', 'muted')
+        self.data_dir_notice.setWordWrap(True)
+        body.addWidget(self.data_dir_notice)
+        return frame
+
+    def _open_folder(self, path: Path, notice: QLabel) -> None:
+        if path.is_dir() and os.name == 'nt':
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            notice.setText('文件夹不存在')
+
+    def _apply_data_dir(self) -> None:
+        old = self.data_dir
+        try:
+            if self.preview:
+                path = cache_dir.validate_cache_dir(self.data_dir_input.text())
+                moved = data_location.migrate_data(old, path)
+            else:
+                path, moved = data_location.set_data_dir(self.data_dir_input.text(), old)
+        except (ValueError, OSError) as exc:
+            self.data_dir_notice.setText(str(exc))
+            return
+        self.data_dir = path
+        self.store.path = path / 'config.json'
+        self.theme_store.path = path / 'appearance.json'
+        # Without an explicit log folder the logs may live inside the settings folder.
+        if not (path / LOCATION_FILE).exists() and self.local_log.directory == old / 'logs':
+            self.local_log.move_to(path / 'logs')
+            self.log_dir_input.setText(str(self.local_log.directory))
+        self.data_dir_input.setText(str(path))
+        text = f'配置文件夹已改为 {path}' + (f'，已移入 {len(moved)} 个文件' if moved else '')
+        self.data_dir_notice.setText(text)
+        self._append_log(text)
 
     def _build_log_dir_card(self) -> QFrame:
         frame, body = card()
