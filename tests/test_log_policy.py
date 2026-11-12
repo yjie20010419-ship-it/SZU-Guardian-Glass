@@ -48,15 +48,24 @@ class RoutineLogFilterTests(unittest.TestCase):
         lines = self.filter.lines_to_write(
             "reconnecting", "检测到校园网认证已失效", "warning"
         )
-        self.assertEqual(lines, ["检测到校园网认证已失效"])
-        lines = self.filter.lines_to_write("offline", "外网仍不可用", "warning")
         self.assertIn("检测 2 次", lines[0])
-        self.assertEqual(lines[-1], "外网仍不可用")
+        self.assertEqual(lines[-1], "检测到校园网认证已失效")
+        lines = self.filter.lines_to_write("offline", "外网仍不可用", "warning")
+        self.assertEqual(lines, ["外网仍不可用"])
         # Recovery is written even though it is an online event.
         lines = self.filter.lines_to_write(
             "online", "网络连接正常（校园网直连）", "success", 20
         )
         self.assertEqual(lines, ["网络连接正常（校园网直连）"])
+
+    def test_recovery_after_a_hiccup_is_written(self):
+        self.cycle()
+        self.cycle()
+        self.filter.lines_to_write("reconnecting", "外网检测失败：直连外网不可用（ConnectTimeout）", "warning")
+        lines = self.filter.lines_to_write(
+            "online", "网络连接正常（外网短暂不通，认证一直在线）", "success", 30
+        )
+        self.assertEqual(lines, ["网络连接正常（外网短暂不通，认证一直在线）"])
 
     def test_wake_from_sleep_and_notes_are_kept(self):
         self.assertEqual(

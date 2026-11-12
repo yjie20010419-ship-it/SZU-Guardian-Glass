@@ -293,9 +293,13 @@ class NetworkClient:
         notes: list[str] = []
         teaching = config.zone == ZONE_OFFICE
         authentication_expired = False
+        # True when the server confirmed the session is still online: then a
+        # failed probe is an internet hiccup, not a lost login.
+        authenticated = False
         if teaching:
             status = self._teaching_status(config, notes)
             authentication_expired = status is not None and status.online is False
+            authenticated = status is not None and status.online is True
             if authentication_expired:
                 # The device list is gone once we are offline; the last one
                 # logged shows who was online right before the drop.
@@ -310,6 +314,9 @@ class NetworkClient:
             current = self.check_connection()
             if current.connected:
                 return replace(current, notes=tuple(notes))
+            if progress_callback:
+                state = "认证仍在线" if authenticated else "认证状态未知"
+                progress_callback(f"外网检测失败：{current.message}（{state}），尝试重新登录…")
 
         login_message = self.send_login(config, progress_callback)
         if progress_callback:
@@ -322,6 +329,14 @@ class NetworkClient:
             if verified.connected:
                 if teaching:
                     self._teaching_status(config, notes)
+                if authenticated:
+                    # The login never dropped, so UU Remote needs no restart.
+                    return ConnectionResult(
+                        True,
+                        "网络连接正常（外网短暂不通，认证一直在线）",
+                        verified.latency_ms,
+                        notes=tuple(notes),
+                    )
                 return ConnectionResult(
                     True,
                     "已自动重连，网络恢复正常",

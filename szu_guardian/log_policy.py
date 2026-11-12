@@ -52,6 +52,12 @@ class RoutineLogFilter:
             lines.extend(self._flush_summary())
             self._online = state == "online"
             self._quiet_since = self.clock() if self._online else None
+        elif level in ("warning", "error"):
+            # Something went wrong mid-check: close the quiet period so the
+            # recovery that follows is written even if it reads "正常".
+            lines.extend(self._flush_summary())
+            self._online = False
+            self._quiet_since = None
         lines.append(message)
         return lines
 

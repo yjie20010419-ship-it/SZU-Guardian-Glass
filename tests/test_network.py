@@ -161,6 +161,30 @@ class NetworkClientTests(unittest.TestCase):
         self.assertEqual(second.notes, ())
         self.assertIn("账号在线设备 3 台", third.notes[0])
 
+    def test_internet_hiccup_with_session_online_is_not_a_reconnect(self):
+        client = self._teaching_client()
+        config = AppConfig(username="user", password="password")
+        srun = Mock()
+        srun.status.return_value = SrunStatus(True, "ok")
+        probes = iter([
+            ConnectionResult(False, "直连外网不可用（ConnectTimeout）"),
+            ConnectionResult(True, "网络连接正常", 30),
+        ])
+        progress = []
+
+        with (
+            patch.object(client, "_teaching_srun_client", return_value=srun),
+            patch.object(client, "check_connection", side_effect=lambda: next(probes)),
+            patch.object(client, "send_login", return_value="认证成功"),
+        ):
+            result = client.ensure_connected(config, progress.append)
+
+        self.assertTrue(result.connected)
+        self.assertFalse(result.reconnected)  # so UU Remote is not restarted
+        self.assertIn("认证一直在线", result.message)
+        self.assertIn("ConnectTimeout", progress[0])
+        self.assertIn("认证仍在线", progress[0])
+
     def test_failed_recovery_reports_server_recheck(self):
         client = self._teaching_client()
         config = AppConfig(username="user", password="password")
