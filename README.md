@@ -5,7 +5,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 深圳大学校园网断线监控与自动重连工具的 Qt 界面版，并会在重新认证后重启 UU 远程。
-基于 [Georgeupup/szu-network-guardian](https://github.com/Georgeupup/szu-network-guardian)，界面从 Tk 改为 PySide6，并加入了下面这些功能。
 
 ## 功能
 
@@ -106,7 +105,6 @@ guardian.spec        打包配置
 
 ## 致谢
 
-- [Georgeupup/szu-network-guardian](https://github.com/Georgeupup/szu-network-guardian)：本项目的基础。
 - [ackness/szu-autoconnect](https://github.com/ackness/szu-autoconnect)、[Sleepstars/SZU-login](https://github.com/Sleepstars/SZU-login)、[vidar-team/srun-login](https://github.com/vidar-team/srun-login)：校园网认证流程和 SRun 协议的参考实现。
 
 第三方归属和许可说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [COMPONENTS.md](COMPONENTS.md)。
