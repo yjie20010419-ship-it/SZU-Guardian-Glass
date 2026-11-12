@@ -132,7 +132,7 @@ class InterfaceTests(unittest.TestCase):
         app.cache_input.setText('relative')
         app._apply_cache()
         self.assertIn('盘符', app.cache_notice.text())
-        target = Path(self.temp.name) / 'AppCache' / 'SZU-Guardian'
+        target = Path(self.temp.name) / 'Apps' / 'Cache' / 'SZU-Guardian'
         app.cache_input.setText(str(target))
         app._apply_cache()
         self.assertTrue(target.is_dir())

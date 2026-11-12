@@ -30,7 +30,7 @@ class CacheDirTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 cache_dir.validate_cache_dir(bad)
         with tempfile.TemporaryDirectory() as temp:
-            target = Path(temp) / "AppCache" / "SZU-Guardian"
+            target = Path(temp) / "Apps" / "Cache" / "SZU-Guardian"
             self.assertEqual(cache_dir.validate_cache_dir(f'"{target}"'), target)
             self.assertTrue(target.is_dir())
 

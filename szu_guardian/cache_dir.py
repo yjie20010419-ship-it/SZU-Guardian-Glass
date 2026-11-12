@@ -18,15 +18,18 @@ import sys
 from pathlib import Path
 
 ENV_NAME = "SZU_GUARDIAN_CACHE"
-CACHE_ROOT_NAME = "AppCache"
+# E:\Apps holds everything installed or cached for these projects:
+# E:\Apps\Cache\<project> for caches, E:\Apps\Tools\<tool> for tools.
+APPS_ROOT_NAME = "Apps"
+CACHE_FOLDER_NAME = "Cache"
 PROJECT_FOLDER = "SZU-Guardian"
 _UNEXPANDED = f"%{ENV_NAME}%"
 
 
 def default_cache_dir() -> Path:
-    """E:\\AppCache\\SZU-Guardian when drive E: exists, else under LocalAppData."""
+    """E:\\Apps\\Cache\\SZU-Guardian when drive E: exists, else under LocalAppData."""
     if Path("E:/").exists():
-        return Path("E:/") / CACHE_ROOT_NAME / PROJECT_FOLDER
+        return Path("E:/") / APPS_ROOT_NAME / CACHE_FOLDER_NAME / PROJECT_FOLDER
     base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
     return Path(base) / "SZUNetworkGuardian" / "cache"
 
@@ -53,7 +56,7 @@ def validate_cache_dir(value: str | os.PathLike[str]) -> Path:
         raise ValueError("缓存路径里不能包含 %")
     path = Path(text)
     if not path.is_absolute() or not path.drive:
-        raise ValueError("请填写带盘符的完整路径，例如 E:\\AppCache\\SZU-Guardian")
+        raise ValueError("请填写带盘符的完整路径，例如 E:\\Apps\\Cache\\SZU-Guardian")
     if not Path(path.drive + "\\").exists():
         raise ValueError(f"找不到磁盘 {path.drive}")
     try:

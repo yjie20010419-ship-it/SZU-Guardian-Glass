@@ -51,7 +51,7 @@
 | 配置（密码用 DPAPI 加密） | `%LOCALAPPDATA%\SZUNetworkGuardian\config.json` |
 | 外观 | `%LOCALAPPDATA%\SZUNetworkGuardian\appearance.json` |
 | 日志（保留 7 天） | `%LOCALAPPDATA%\SZUNetworkGuardian\logs\guardian-YYYY-MM-DD.log` |
-| 运行时解压目录 | 用户环境变量 `SZU_GUARDIAN_CACHE`，默认是 `E:\AppCache\SZU-Guardian`（没有 E 盘时放在 `%LOCALAPPDATA%` 下）；在“设置”页可以修改 |
+| 运行时解压目录 | 用户环境变量 `SZU_GUARDIAN_CACHE`，默认是 `E:\Apps\Cache\SZU-Guardian`（没有 E 盘时放在 `%LOCALAPPDATA%` 下）；在“设置”页可以修改 |
 
 exe 是单文件程序，每次启动都会先解压到运行时目录，正常退出时自动删除。如果程序是被强制结束的，残留文件会在下次启动时自动清理，也可以在设置页手动清理。
 
