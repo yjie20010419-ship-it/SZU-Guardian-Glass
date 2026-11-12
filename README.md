@@ -1,203 +1,111 @@
-# SZU Network Guardian
+# 校园网守护 · Glass 版（SZU Network Guardian Glass）
 
-[![Build Windows EXE](https://github.com/Georgeupup/szu-network-guardian/actions/workflows/build-windows.yml/badge.svg)](https://github.com/Georgeupup/szu-network-guardian/actions/workflows/build-windows.yml)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows11&logoColor=white)](https://www.microsoft.com/windows)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-一个简洁、轻量的深圳大学校园网断线监控与自动重连工具。
+深圳大学校园网断线监控与自动重连工具的 Qt 界面版，并会在重新认证后重启 UU 远程。
+基于 [Georgeupup/szu-network-guardian](https://github.com/Georgeupup/szu-network-guardian)，界面从 Tk 改为 PySide6，并加入了下面这些功能。
 
-支持新版教学/办公区深澜 SRun 认证、宿舍区 ePortal 认证、系统托盘、开机自启和安全凭据存储。
+## 功能
 
-## 功能特性
+**校园网**
+- 教学/办公区使用深澜 SRun challenge 认证，宿舍区使用 ePortal 认证。
+- 每次检测都会先向认证服务器核验会话。即使百度等白名单网页还能打开，只要会话失效，也会立即重新认证。
+- 联网检测和认证都绑定在校园网物理网卡上直连，不会被 Clash、FlClash 等代理的 TUN / Fake-IP 干扰。
+- 网卡地址一变化（插拔网线、WiFi 重连、DHCP 续租）就立即检测，不用等到下一个检测间隔。
+- 从睡眠恢复后，重新建立网卡绑定并立即检测。
+- 保存设置后立即生效，不需要暂停再重新开始。
 
-- 简约的 Windows 图形界面
-- 手动选择教学/办公区或宿舍区，避免校园网网关互通造成误判
-- 提供实验性的自动顺序尝试模式，优先尝试教学区
-- 定时检测直连网络状态，避免代理造成在线误判
-- 可强制通过校园网物理网卡直连，绕过 Clash、Mihomo、V2Ray 等代理的 TUN/Fake-IP
-- 教学/办公区优先核验 SRun 认证会话；即使百度等白名单网页可打开，认证失效也会立即重连
-- 使用两个独立且不可缓存的外网请求复核网络，避免单个检测页造成假在线
-- 教学/办公区使用 SRun challenge 加密认证
-- 宿舍区使用 ePortal 认证接口
-- 仅在断网时尝试登录，不会在联网正常时重复认证
-- 认证成功后分阶段复查外网，避免过早报告失败
-- 最小化或关闭窗口后进入系统托盘继续运行
-- 托盘菜单支持打开界面、立即检测和退出
-- 支持当前 Windows 用户开机自启，无需管理员权限
-- 使用 Windows DPAPI 加密保存密码
-- 界面仅保留最近 3 小时日志
-- 完整日志按天保存，自动删除 7 天前的日志
-- 支持 PyInstaller 单文件 EXE 和 GitHub Actions 自动构建
+**诊断**
+- 日志里会记录认证服务器返回的状态码、账号的在线设备列表（有变化时才记），以及登录后的复查结果。复查结果能区分“登录后又被其他设备挤下线”和“认证正常但外网不通”。
+- 网络正常时，每小时只写一句汇总；掉线、重连、设备变化等事件会立即写入。
+- 记录页可以查看当天的完整记录（包括重启前的），还有掉线统计：今天掉线几次、累计多久、最长一次，以及近 7 天的情况。
 
-## 系统要求
+**UU 远程**
+- 重新认证成功后，重启 UU 远程的主程序和后台服务（需要先授权一次）。
+- 重启后确认 `GameViewerServer.exe` 已经连上服务器；60 秒内没连上，就再重启一次。
 
-- Windows 10 或 Windows 11
-- 运行源码时需要 Python 3.10 或更高版本
-- 已连接 `SZU_WLAN` 或深圳大学校园有线网络
+**界面**
+- 状态图标：在线时绿色“呼吸”，检测时转圈，掉线时变红；外圈显示距下次检测的进度。
+- 五种主题色，也可以自定义颜色。换色有过渡动画，Windows 标题栏跟着一起变色。
+- 页面淡入、导航滑块、开关和按钮悬停都有动画。窗口隐藏时动画停止，不占用 CPU。
+- 托盘图标的小圆点表示状态：绿色正常，红色掉线，橙色检测中，灰色已暂停。
+- 只能运行一个实例：再次打开 exe 时，会切换到已经在运行的窗口。
 
-> [!NOTE]
-> 本程序负责网络链路建立后的校园网认证。如果关闭 Wi-Fi、拔出网线或在 Windows 中主动断开无线网络，请先恢复物理网络连接。建议为 `SZU_WLAN` 开启“自动连接”。
+## 使用
 
-## 快速开始
-
-### 方式一：下载 Release（推荐）
-
-不需要安装 Python，适合大多数用户：
-
-1. 打开 [Releases 页面](https://github.com/Georgeupup/szu-network-guardian/releases/latest)。
-2. 下载最新版 `SZU-Network-Guardian-v*.exe`。
-3. 双击 EXE 即可运行，无需安装。
-
-### 首次使用
-
-1. 输入校园网账号和统一身份认证密码。
-2. 按电脑的实际位置选择区域：实验室电脑选择“教学 / 办公区”，宿舍电脑选择“宿舍区”。不建议长期无人值守的电脑使用实验性自动模式。
-3. 设置检测间隔，推荐 3～5 分钟。
-4. 根据需要勾选“开机自动启动”。
-5. 使用代理软件时保持“检测和认证强制直连（推荐）”处于勾选状态。
-6. 点击“开始守护”。
-7. 最小化或关闭窗口，程序会进入系统托盘继续监控。
-
-### 方式二：使用源码运行
-
-```powershell
-git clone https://github.com/Georgeupup/szu-network-guardian.git
-cd szu-network-guardian
-python -m pip install -r requirements.txt
-python main.py
-```
-
-## 构建 Windows EXE
-
-双击 `build.bat`，或在 PowerShell 中运行：
-
-```powershell
-.\build.ps1
-```
-
-构建脚本会创建独立的 `.venv-build` 环境、执行自动化测试，并生成：
-
-```text
-dist\SZU-Network-Guardian-v1.3.0.exe
-```
-
-也可以在仓库的 [Actions 页面](https://github.com/Georgeupup/szu-network-guardian/actions/workflows/build-windows.yml) 手动运行 `Build Windows EXE`，然后下载构建产物。
+1. 把 `SZU-Guardian-Glass.exe` 放到一个长期保留的位置，然后双击运行。
+2. 填写账号、统一身份认证密码，选择实际所在的网络区域，设置检测间隔（建议 3～5 分钟）。
+3. 用代理软件时，保持“检测与认证强制直连”开启。
+4. 点击“开始守护”。关闭窗口后，程序会留在系统托盘继续运行。
+5. 如果需要自动重启 UU 远程，点击“授权完整重启”，在弹出的 Windows 提示里确认一次。
 
 > [!IMPORTANT]
-> 请先把 EXE 移动到最终位置，再勾选“开机自动启动”。开机启动项会记录 EXE 的当前位置；移动文件后需要取消并重新勾选。
+> 先把 exe 移到最终位置，再打开“开机启动”。开机启动项记录的是 exe 当前的位置。
 
-## 配置与日志
+## 文件位置
 
-配置文件：
+| 内容 | 位置 |
+| --- | --- |
+| 配置（密码用 DPAPI 加密） | `%LOCALAPPDATA%\SZUNetworkGuardian\config.json` |
+| 外观 | `%LOCALAPPDATA%\SZUNetworkGuardian\appearance.json` |
+| 日志（保留 7 天） | `%LOCALAPPDATA%\SZUNetworkGuardian\logs\guardian-YYYY-MM-DD.log` |
+| 运行时解压目录 | 用户环境变量 `SZU_GUARDIAN_CACHE`，默认是 `E:\AppCache\SZU-Guardian`（没有 E 盘时放在 `%LOCALAPPDATA%` 下）；在“设置”页可以修改 |
 
-```text
-%LOCALAPPDATA%\SZUNetworkGuardian\config.json
+exe 是单文件程序，每次启动都会先解压到运行时目录，正常退出时自动删除。如果程序是被强制结束的，残留文件会在下次启动时自动清理，也可以在设置页手动清理。
+
+## 从源码构建
+
+需要 Windows x64 和 Python 3.10 以上版本（当前用 3.14 构建）。
+
+```powershell
+.\build.ps1            # 第一次运行：创建 .venv-build、安装依赖、跑测试、打包
+.\build.ps1 -SkipInstall
 ```
 
-完整日志：
+打包配置写在 `guardian.spec` 里：单文件、解压到 `%SZU_GUARDIAN_CACHE%`，并去掉了用不到的 Qt 组件（软件 OpenGL、翻译文件、多余插件）。成品是 `dist\SZU-Guardian-Glass.exe`，大约 30 MB。
 
-```text
-%LOCALAPPDATA%\SZUNetworkGuardian\logs
+只跑测试：
+
+```powershell
+.\.venv-build\Scripts\python.exe -m unittest discover -s tests
 ```
-
-日志使用 `guardian-YYYY-MM-DD.log` 命名。程序启动时和运行期间会自动清理 7 天前的日志。
-
-## 与代理软件同时使用
-
-程序默认勾选“检测和认证强制直连（推荐）”。开启后会：
-
-1. 排除代理常用的 `198.18.0.0/15` Fake-IP 地址段。
-2. 找到电脑真实的校园网有线或无线网卡。
-3. 自动读取物理网卡通过 DHCP 获得的 DNS，并通过该网卡执行独立查询。
-4. 将联网检测和校园网认证绑定到物理网卡，不经过系统代理或 TUN 虚拟网卡。
-
-程序会优先使用与校园网 IPv4 地址属于同一物理网卡的 DNS。即使校园网调整 DNS 地址，也无需先连接外网或手动修改配置；当网卡未提供可用 DNS 时，程序才会依次尝试内置的校园网和公共 DNS 作为兜底。
-
-电脑从睡眠或休眠恢复后，程序会识别系统暂停造成的时间间隔，重新建立网卡绑定、DNS 路由和 HTTP 会话，并立即进行一次网络检测。
-
-正常日志会显示：
-
-```text
-网络连接正常（校园网直连）
-```
-
-教学/办公区每次检测还会先核验深澜认证会话。校园网注销后，即使百度首页等少数网页仍可访问，也会出现下面的日志并触发登录：
-
-```text
-检测到校园网认证已失效，正在重新认证…
-正在使用教学 / 办公区认证…
-```
-
-如果直连模式提示找不到物理网卡，请先确认电脑仍连接校园有线网络或 `SZU_WLAN`。只有在未使用代理、且直连模式确实无法适配当前网络时，才建议取消勾选。
-
-开机自启使用当前用户注册表项：
-
-```text
-HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
-```
-
-## 认证接口
-
-| 网络区域 | 认证方式 | 地址 |
-| --- | --- | --- |
-| 教学 / 办公区 | 深澜 SRun challenge 登录 | `https://net.szu.edu.cn` |
-| 宿舍区 | ePortal 登录 | `http://172.30.255.42:801/eportal/portal/login/` |
-
-教学区已经从旧版 Dr.COM 简单表单迁移到带 challenge 的 SRun 认证。相关实现集中在：
-
-- `szu_guardian/srun.py`：SRun 加密和登录流程
-- `szu_guardian/network.py`：区域识别、联网检测和重连流程
-- `szu_guardian/monitor.py`：后台监控调度
-- `szu_guardian/tray.py`：Windows 系统托盘
 
 ## 项目结构
 
 ```text
-.
-├── .github/workflows/       # Windows 自动构建
-├── szu_guardian/
-│   ├── local_log.py         # 本地日志与自动清理
-│   ├── direct_network.py    # 物理网卡绑定与直连 DNS
-│   ├── monitor.py           # 后台监控
-│   ├── network.py           # 网络检测与认证入口
-│   ├── srun.py              # SRun 协议实现
-│   ├── startup.py           # Windows 开机自启
-│   ├── storage.py           # DPAPI 配置存储
-│   ├── tray.py              # 系统托盘
-│   └── ui.py                # 图形界面
-├── tests/                   # 自动化测试
-├── build.ps1                # Windows 打包脚本
-├── main.py                  # 程序入口
-└── requirements.txt
+szu_guardian/
+  network.py         检测与认证流程、诊断信息
+  srun.py            SRun 协议（含在线设备解析）
+  direct_network.py  物理网卡绑定与直连 DNS
+  monitor.py         后台监控循环
+  net_watch.py       网卡地址变化监听
+  uu_remote.py       UU 远程重启与上线确认
+  log_policy.py      日志精简规则
+  outage_stats.py    掉线统计
+  local_log.py       本地日志
+  cache_dir.py       运行时解压目录
+  single_instance.py 防止重复运行
+  motion.py          动画控件
+  ui.py              主界面
+tests/               自动化测试
+guardian.spec        打包配置
 ```
 
-## 隐私与安全
+## 隐私
 
-- 源码和构建产物不包含预设账号或密码。
-- 运行日志不会输出密码、认证 challenge 或完整认证载荷。
-- 密码通过 Windows DPAPI 加密，通常只能由保存它的同一 Windows 用户解密。
-- 请勿把 `%LOCALAPPDATA%\SZUNetworkGuardian\config.json` 上传到公共仓库。
+- 源码和构建产物里没有预设任何账号或密码；测试里的 IP 都是示例地址。
+- 日志不会记录密码和认证载荷，但会记录账号在线设备的 IP，只保存在本机。
+- 不要把 `config.json` 上传到公开仓库。
 
-## Acknowledgements / 致谢
+## 致谢
 
-本项目在以下开源项目和公开技术资料的基础上完成，感谢原作者与贡献者：
+- [Georgeupup/szu-network-guardian](https://github.com/Georgeupup/szu-network-guardian)：本项目的基础。
+- [ackness/szu-autoconnect](https://github.com/ackness/szu-autoconnect)、[Sleepstars/SZU-login](https://github.com/Sleepstars/SZU-login)、[vidar-team/srun-login](https://github.com/vidar-team/srun-login)：校园网认证流程和 SRun 协议的参考实现。
 
-- [ackness/szu-autoconnect](https://github.com/ackness/szu-autoconnect)：本项目最初参考的深圳大学校园网自动重连脚本，包括旧版 Dr.COM 登录思路和基础监控结构。
-- [Sleepstars/SZU-login](https://github.com/Sleepstars/SZU-login)：提供新版深圳大学教学/办公区 SRun、宿舍区 ePortal 接口及登录流程的重要参考。
-- [vidar-team/srun-login](https://github.com/vidar-team/srun-login)：SRun challenge、XXTEA/XEncode、校验和与自定义 Base64 流程的上游实现。
-- E99p1ant 及上述项目的所有贡献者：感谢其在 SRun 协议实现与开源维护方面的工作。
-
-`szu_guardian/srun.py` 包含基于 MIT 许可实现的 Python 移植。第三方归属和许可说明请参阅 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request。若学校调整认证方式，请附上脱敏后的响应格式或错误日志，切勿提交真实账号、密码或认证数据。
+第三方归属和许可说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [COMPONENTS.md](COMPONENTS.md)。
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE)。
-
-## 免责声明
-
-本项目仅用于维护本人账号的正常校园网连接。请遵守学校网络管理规定；因认证接口变更、账号状态、网络环境或不当使用导致的问题，项目作者不承担责任。
+[MIT License](LICENSE)。仅用于维护本人账号的正常校园网连接，请遵守学校的网络管理规定。
