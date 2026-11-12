@@ -67,14 +67,15 @@ def registered_cache_dir() -> Path | None:
 
 
 def validate_cache_dir(value: str | os.PathLike[str]) -> Path:
+    """Check a folder path from the settings page (cache or logs) and create it."""
     text = str(value).strip().strip('"')
     if not text:
-        raise ValueError("请填写缓存文件夹路径")
+        raise ValueError("请填写文件夹路径")
     if "%" in text:
         raise ValueError("缓存路径里不能包含 %")
     path = Path(text)
     if not path.is_absolute() or not path.drive:
-        raise ValueError("请填写带盘符的完整路径，例如 E:\\Apps\\Cache\\SZU-Guardian")
+        raise ValueError("请填写带盘符的完整路径，例如 E:\\Apps\\Logs\\SZU-Guardian")
     if not Path(path.drive + "\\").exists():
         raise ValueError(f"找不到磁盘 {path.drive}")
     try:

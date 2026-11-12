@@ -138,6 +138,19 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(target.is_dir())
         self.assertIn('下次启动生效', app.cache_notice.text())
 
+    def test_log_folder_setting_moves_logs_immediately(self):
+        app = self.app
+        original = app.local_log.directory
+        target = Path(self.temp.name) / 'Apps' / 'Logs' / 'SZU-Guardian'
+        try:
+            app.log_dir_input.setText(str(target))
+            app._apply_log_dir()
+            self.assertEqual(app.local_log.directory, target)
+            self.assertTrue(any(target.glob('guardian-*.log')))
+            self.assertIn('已改为', app.log_dir_notice.text())
+        finally:
+            app.local_log.move_to(original)
+
     def test_monitor_button_routes_to_existing_controller(self):
         app = self.app
         with patch.object(app, 'monitor') as monitor, patch.object(app, '_save_settings', return_value=True):

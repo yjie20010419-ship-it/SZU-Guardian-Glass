@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
+import shutil
 import threading
 from pathlib import Path
 
@@ -9,10 +11,77 @@ from .storage import default_config_path
 
 
 LOG_RETENTION_DAYS = 7
+LOG_GLOB = "guardian-*.log"
+LOCATION_FILE = "log_location.json"
 
 
-def default_log_directory() -> Path:
-    return default_config_path().parent / "logs"
+def legacy_log_directory(data_dir: Path | None = None) -> Path:
+    """Where logs lived before the folder became configurable."""
+    return (data_dir or default_config_path().parent) / "logs"
+
+
+def default_log_directory(data_dir: Path | None = None) -> Path:
+    """E:\\Apps\\Logs\\SZU-Guardian on a local E: disk, else the data folder."""
+    from .cache_dir import APPS_ROOT_NAME, PROJECT_FOLDER, _is_fixed_drive
+
+    if _is_fixed_drive("E:\\"):
+        return Path("E:/") / APPS_ROOT_NAME / "Logs" / PROJECT_FOLDER
+    return legacy_log_directory(data_dir)
+
+
+def chosen_log_directory(data_dir: Path) -> Path:
+    """The folder picked in the settings, or the default."""
+    try:
+        payload = json.loads((data_dir / LOCATION_FILE).read_text(encoding="utf-8"))
+        value = str(payload.get("path", "")).strip()
+        if value:
+            return Path(value)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return default_log_directory(data_dir)
+
+
+def save_log_location(data_dir: Path, directory: Path) -> None:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    temporary = data_dir / (LOCATION_FILE + ".tmp")
+    temporary.write_text(json.dumps({"path": str(directory)}, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(data_dir / LOCATION_FILE)
+
+
+def migrate_logs(source: Path, target: Path) -> int:
+    """Move every daily log from ``source`` into ``target``.
+
+    When both folders hold the same day, the lines are merged in time order
+    (every line starts with its timestamp).  Returns the number of files moved.
+    """
+    try:
+        if not source.is_dir() or source.resolve() == target.resolve():
+            return 0
+    except OSError:
+        return 0
+    target.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for old in sorted(source.glob(LOG_GLOB)):
+        new = target / old.name
+        try:
+            if new.exists():
+                lines = old.read_text(encoding="utf-8", errors="replace").splitlines()
+                lines += new.read_text(encoding="utf-8", errors="replace").splitlines()
+                # Stable sort on the "YYYY-MM-DD HH:MM:SS" prefix keeps the
+                # original order of lines written in the same second.
+                lines.sort(key=lambda line: line[:19])
+                new.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                old.unlink()
+            else:
+                shutil.move(str(old), str(new))
+            moved += 1
+        except OSError:
+            continue
+    try:
+        source.rmdir()  # only succeeds once it is empty
+    except OSError:
+        pass
+    return moved
 
 
 class LocalLog:
@@ -22,6 +91,14 @@ class LocalLog:
         self._last_cleanup: dt.datetime | None = None
         self.directory.mkdir(parents=True, exist_ok=True)
         self.cleanup()
+
+    def move_to(self, directory: Path) -> int:
+        """Switch to another folder, taking the existing logs along."""
+        with self._lock:
+            moved = migrate_logs(self.directory, directory)
+            directory.mkdir(parents=True, exist_ok=True)
+            self.directory = directory
+        return moved
 
     def write(self, message: str, level: str = "info") -> None:
         now = dt.datetime.now()

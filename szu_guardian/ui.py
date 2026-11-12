@@ -18,7 +18,7 @@ from .models import AppConfig, ZONE_AUTO, ZONE_OFFICE, ZONE_DORMITORY
 from .monitor import MonitorController, MonitorEvent
 from .storage import ConfigStore
 from .startup import is_autostart_enabled, set_autostart
-from .local_log import LocalLog
+from .local_log import LocalLog, chosen_log_directory, legacy_log_directory, migrate_logs, save_log_location
 from .log_policy import RoutineLogFilter
 from .runtime_environment import sanitize_external_environment
 from .net_watch import AddressChangeWatcher
@@ -155,7 +155,16 @@ class GuardianApp:
         self.current_color = self.saved_color
         self.events = queue.Queue()
         self.monitor = MonitorController(self.events.put, uu_restarter=uu_remote.restart_and_verify)
-        self.local_log = LocalLog(store.path.parent / 'logs')
+        self.data_dir = store.path.parent
+        legacy_logs = legacy_log_directory(self.data_dir)
+        log_dir = legacy_logs if preview else chosen_log_directory(self.data_dir)
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            log_dir = legacy_logs  # e.g. the chosen drive is gone
+        # Logs written before the folder became configurable follow it there.
+        self.migrated_logs = migrate_logs(legacy_logs, log_dir) if log_dir != legacy_logs else 0
+        self.local_log = LocalLog(log_dir)
         self.log_filter = RoutineLogFilter()
         self.log_entries = deque()
         self.is_exiting = False
@@ -186,6 +195,8 @@ class GuardianApp:
         # Show what was logged earlier today, so a restart keeps the history.
         self.log_entries.extend(self.local_log.read_day(limit=self.LOG_VIEW_LIMIT))
         self._append_log('程序已启动')
+        if self.migrated_logs:
+            self._append_log(f'已把 {self.migrated_logs} 个日志文件移到 {self.local_log.directory}')
         self._refresh_stats()
         self.last_network_trigger = 0.0
         self.net_watch = AddressChangeWatcher(lambda: self.events.put(('netchange', None)))
@@ -421,6 +432,7 @@ class GuardianApp:
         body.addLayout(row)
         body.addWidget(label('此区域仅预览外观，不执行网络检测。', 'muted'))
         layout.addWidget(preview)
+        layout.addWidget(self._build_log_dir_card())
         layout.addWidget(self._build_cache_card())
         row = QHBoxLayout()
         self.appearance_notice = label('选择颜色可即时预览，保存后下次启动生效。', 'muted')
@@ -429,6 +441,40 @@ class GuardianApp:
         row.addWidget(button('保存外观', self._save_theme, True))
         layout.addLayout(row)
         layout.addStretch()
+
+    def _build_log_dir_card(self) -> QFrame:
+        frame, body = card()
+        body.addWidget(label('日志文件夹', 'sectionTitle'))
+        body.addWidget(label('运行日志按天保存在这里，保留 7 天。修改后立即生效，已有日志会一起移过去。', 'muted'))
+        row = QHBoxLayout()
+        self.log_dir_input = QLineEdit(str(self.local_log.directory))
+        row.addWidget(self.log_dir_input, 1)
+        row.addWidget(button('浏览…', lambda: self._browse_into(self.log_dir_input, '选择日志文件夹')))
+        row.addWidget(button('打开', self._open_logs))
+        row.addWidget(button('应用', self._apply_log_dir, True))
+        body.addLayout(row)
+        self.log_dir_notice = label(f'当前位置：{self.local_log.directory}', 'muted')
+        self.log_dir_notice.setWordWrap(True)
+        body.addWidget(self.log_dir_notice)
+        return frame
+
+    def _browse_into(self, field: QLineEdit, title: str) -> None:
+        chosen = QFileDialog.getExistingDirectory(self.window, title, field.text())
+        if chosen:
+            field.setText(str(Path(chosen)))
+
+    def _apply_log_dir(self) -> None:
+        try:
+            path = cache_dir.validate_cache_dir(self.log_dir_input.text())
+            moved = self.local_log.move_to(path)
+            save_log_location(self.data_dir, path)
+        except (ValueError, OSError) as exc:
+            self.log_dir_notice.setText(str(exc))
+            return
+        self.log_dir_input.setText(str(path))
+        text = f'日志文件夹已改为 {path}' + (f'，已移入 {moved} 个日志文件' if moved else '')
+        self.log_dir_notice.setText(text)
+        self._append_log(text)
 
     def _build_cache_card(self) -> QFrame:
         frame, body = card()

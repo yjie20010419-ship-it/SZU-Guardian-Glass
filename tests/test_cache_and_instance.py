@@ -94,6 +94,45 @@ class LocalLogReadTests(unittest.TestCase):
             self.assertEqual(entries[0][0].date(), dt.date.today())
 
 
+class LogLocationTests(unittest.TestCase):
+    def test_migration_moves_files_and_merges_same_day_in_time_order(self):
+        from szu_guardian.local_log import migrate_logs
+
+        with tempfile.TemporaryDirectory() as temp:
+            old, new = Path(temp) / "old", Path(temp) / "new"
+            old.mkdir()
+            new.mkdir()
+            (old / "guardian-2026-11-11.log").write_text("2026-11-11 09:00:00 [INFO] a\n", encoding="utf-8")
+            (old / "guardian-2026-11-12.log").write_text(
+                "2026-11-12 08:00:00 [INFO] early\n2026-11-12 10:00:00 [INFO] late-old\n", encoding="utf-8"
+            )
+            (new / "guardian-2026-11-12.log").write_text("2026-11-12 09:00:00 [INFO] middle\n", encoding="utf-8")
+
+            self.assertEqual(migrate_logs(old, new), 2)
+
+            self.assertFalse(old.exists())  # emptied and removed
+            self.assertTrue((new / "guardian-2026-11-11.log").exists())
+            merged = (new / "guardian-2026-11-12.log").read_text(encoding="utf-8").splitlines()
+            self.assertEqual([line.split("] ", 1)[1] for line in merged], ["early", "middle", "late-old"])
+
+    def test_location_is_remembered(self):
+        from szu_guardian.local_log import chosen_log_directory, save_log_location
+
+        with tempfile.TemporaryDirectory() as temp:
+            data = Path(temp)
+            target = data / "MyLogs"
+            save_log_location(data, target)
+            self.assertEqual(chosen_log_directory(data), target)
+
+    def test_logger_can_move_while_running(self):
+        with tempfile.TemporaryDirectory() as temp:
+            log = LocalLog(Path(temp) / "a")
+            log.write("before")
+            self.assertEqual(log.move_to(Path(temp) / "b"), 1)
+            log.write("after")
+            self.assertEqual([m for _, m in log.read_day()], ["before", "after"])
+
+
 class SingleInstanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
