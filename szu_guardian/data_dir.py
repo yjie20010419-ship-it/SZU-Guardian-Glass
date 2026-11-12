@@ -3,7 +3,7 @@
 The program must know this folder before it can read any setting, so the
 choice is kept in the per-user environment variable ``SZU_GUARDIAN_DATA_DIR``
 (HKCU\\Environment), the same way the unpack folder is chosen.  Default:
-E:\\Apps\\Config\\SZU-Guardian on a local E: disk, else %LOCALAPPDATA%.
+E:\\Apps\\SZU-Guardian\\Config on a local E: disk, else %LOCALAPPDATA%.
 """
 
 from __future__ import annotations
@@ -13,16 +13,18 @@ import shutil
 from pathlib import Path
 
 from .cache_dir import (
-    APPS_ROOT_NAME,
-    PROJECT_FOLDER,
-    _is_fixed_drive,
+    old_layout_dir,
+    project_root,
     read_user_env,
+    remove_old_layout,
+    same_path,
     validate_cache_dir,
     write_user_env,
 )
 
 ENV_NAME = "SZU_GUARDIAN_DATA_DIR"
 LEGACY_FOLDER = "SZUNetworkGuardian"
+CONFIG_FOLDER_NAME = "Config"
 # Everything that belongs in the settings folder (logs have their own).
 DATA_FILES = ("config.json", "appearance.json", "log_location.json")
 
@@ -33,9 +35,9 @@ def legacy_data_dir() -> Path:
 
 
 def default_data_dir() -> Path:
-    if _is_fixed_drive("E:\\"):
-        return Path("E:/") / APPS_ROOT_NAME / "Config" / PROJECT_FOLDER
-    return legacy_data_dir()
+    """E:\\Apps\\SZU-Guardian\\Config on a local E: disk, else %LOCALAPPDATA%."""
+    root = project_root()
+    return root / CONFIG_FOLDER_NAME if root else legacy_data_dir()
 
 
 def current_data_dir() -> Path:
@@ -92,12 +94,18 @@ def ensure_data_dir() -> tuple[Path, list[str]]:
     chosen folder, and the choice is saved so every later start agrees.
     """
     target = current_data_dir()
+    old_layout = old_layout_dir(CONFIG_FOLDER_NAME)
+    if same_path(target, old_layout):
+        target = default_data_dir()  # the old default: move to the new layout
     try:
         target = validate_cache_dir(target)
     except ValueError:
         target = legacy_data_dir()  # e.g. the drive is gone: stay usable
         target.mkdir(parents=True, exist_ok=True)
     moved = migrate_data(legacy_data_dir(), target)
+    if not same_path(old_layout, target):
+        moved += migrate_data(old_layout, target)
+        remove_old_layout(CONFIG_FOLDER_NAME)
     if read_user_env(ENV_NAME) != str(target) or os.environ.get(ENV_NAME) != str(target):
         write_user_env(ENV_NAME, str(target))
     return target, moved

@@ -56,7 +56,27 @@ class CacheDirTests(unittest.TestCase):
     def test_default_dir_is_project_folder(self):
         path = cache_dir.default_cache_dir()
         self.assertTrue(path.is_absolute())
-        self.assertIn(path.name, (cache_dir.PROJECT_FOLDER, "cache"))
+        self.assertIn(path.name, (cache_dir.CACHE_FOLDER_NAME, "cache"))
+
+    def test_project_first_layout(self):
+        with patch.object(cache_dir, "_is_fixed_drive", return_value=True):
+            self.assertEqual(cache_dir.default_cache_dir(), Path("E:/Apps/SZU-Guardian/Cache"))
+            from szu_guardian import data_dir
+            from szu_guardian.local_log import default_log_directory
+
+            self.assertEqual(data_dir.default_data_dir(), Path("E:/Apps/SZU-Guardian/Config"))
+            self.assertEqual(default_log_directory(), Path("E:/Apps/SZU-Guardian/Logs"))
+        self.assertEqual(cache_dir.old_layout_dir("Cache"), Path("E:/Apps/Cache/SZU-Guardian"))
+
+    def test_registered_old_cache_default_switches_to_new_layout(self):
+        written = []
+        with (
+            patch.object(cache_dir, "registered_cache_dir", return_value=Path("E:/Apps/Cache/SZU-Guardian")),
+            patch.object(cache_dir, "default_cache_dir", return_value=Path("E:/Apps/SZU-Guardian/Cache")),
+            patch.object(cache_dir, "set_cache_dir", side_effect=lambda value: written.append(Path(value)) or Path(value)),
+        ):
+            self.assertEqual(cache_dir.ensure_registered(), Path("E:/Apps/SZU-Guardian/Cache"))
+        self.assertEqual(written, [Path("E:/Apps/SZU-Guardian/Cache")])
 
     def test_without_a_usable_e_drive_the_profile_is_used(self):
         with patch.object(cache_dir, "_is_fixed_drive", return_value=False):

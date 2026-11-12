@@ -61,6 +61,30 @@ class DataDirTests(unittest.TestCase):
         self.assertEqual(data_dir.current_data_dir(), chosen)
         self.assertEqual(data_dir.ensure_data_dir()[0], chosen)  # next start agrees
 
+    def test_old_type_first_layout_moves_to_project_folder(self):
+        old = self.root / "E" / "Apps" / "Config" / "SZU-Guardian"
+        old.mkdir(parents=True)
+        (old / "config.json").write_text("{}", encoding="utf-8")
+        self.registry[data_dir.ENV_NAME] = str(old)  # what v1.0.2 saved
+        new = self.root / "E" / "Apps" / "SZU-Guardian" / "Config"
+
+        with (
+            patch.object(data_dir, "old_layout_dir", return_value=old),
+            patch.object(data_dir, "default_data_dir", return_value=new),
+            patch.object(
+                data_dir,
+                "remove_old_layout",
+                side_effect=lambda kind: (data_dir.remove_if_empty(old), data_dir.remove_if_empty(old.parent)),
+            ),
+        ):
+            target, moved = data_dir.ensure_data_dir()
+
+        self.assertEqual(target, new)
+        self.assertEqual(moved, ["config.json"])
+        self.assertTrue((new / "config.json").exists())
+        self.assertFalse(old.parent.exists())  # E:\Apps\Config removed
+        self.assertEqual(self.registry[data_dir.ENV_NAME], str(new))
+
     def test_existing_file_at_target_is_kept(self):
         source, target = self.root / "a", self.root / "b"
         source.mkdir()

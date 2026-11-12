@@ -18,7 +18,7 @@ from .models import AppConfig, ZONE_AUTO, ZONE_OFFICE, ZONE_DORMITORY
 from .monitor import MonitorController, MonitorEvent
 from .storage import ConfigStore
 from .startup import is_autostart_enabled, set_autostart
-from .local_log import LocalLog, LOCATION_FILE, chosen_log_directory, legacy_log_directory, migrate_logs, save_log_location
+from .local_log import LocalLog, LOCATION_FILE, chosen_log_directory, legacy_log_directory, migrate_logs, old_log_locations, save_log_location
 from . import data_dir as data_location
 from .data_dir import legacy_data_dir, remove_if_empty
 from .log_policy import RoutineLogFilter
@@ -165,10 +165,15 @@ class GuardianApp:
             log_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             log_dir = legacy_logs  # e.g. the chosen drive is gone
-        # Logs written before the folder became configurable follow it there.
-        self.migrated_logs = migrate_logs(legacy_logs, log_dir) if log_dir != legacy_logs else 0
-        if not preview and legacy_data_dir() != self.data_dir:
-            remove_if_empty(legacy_data_dir())  # nothing left on C: once moved
+        # Logs left at an earlier version's default location follow along.
+        self.migrated_logs = 0
+        for old in ([legacy_logs] if preview else old_log_locations()):
+            if not cache_dir.same_path(old, log_dir):
+                self.migrated_logs += migrate_logs(old, log_dir)
+        if not preview:
+            cache_dir.remove_old_layout('Logs')
+            if legacy_data_dir() != self.data_dir:
+                remove_if_empty(legacy_data_dir())  # nothing left on C: once moved
         self.local_log = LocalLog(log_dir)
         self.log_filter = RoutineLogFilter()
         self.log_entries = deque()

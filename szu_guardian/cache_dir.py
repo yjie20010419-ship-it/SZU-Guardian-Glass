@@ -18,12 +18,44 @@ import sys
 from pathlib import Path
 
 ENV_NAME = "SZU_GUARDIAN_CACHE"
-# E:\Apps holds everything installed or cached for these projects:
-# E:\Apps\Cache\<project> for caches, E:\Apps\Tools\<tool> for tools.
+# E:\Apps is the umbrella folder for all projects, one sub-folder each:
+#   E:\Apps\SZU-Guardian\Cache    unpacked program files
+#   E:\Apps\SZU-Guardian\Config   settings
+#   E:\Apps\SZU-Guardian\Logs     daily logs
+# (v1.0.0–v1.0.2 used the type-first layout E:\Apps\<Kind>\SZU-Guardian;
+# those folders are migrated and removed.)
 APPS_ROOT_NAME = "Apps"
 CACHE_FOLDER_NAME = "Cache"
 PROJECT_FOLDER = "SZU-Guardian"
 _UNEXPANDED = f"%{ENV_NAME}%"
+
+
+def project_root() -> Path | None:
+    """E:\\Apps\\SZU-Guardian when E: is a local hard disk, else None."""
+    if _is_fixed_drive("E:\\"):
+        return Path("E:/") / APPS_ROOT_NAME / PROJECT_FOLDER
+    return None
+
+
+def old_layout_dir(kind: str) -> Path:
+    """Where v1.0.0–v1.0.2 put this kind of folder (E:\\Apps\\<kind>\\SZU-Guardian)."""
+    return Path("E:/") / APPS_ROOT_NAME / kind / PROJECT_FOLDER
+
+
+def same_path(a: Path | None, b: Path | None) -> bool:
+    if a is None or b is None:
+        return False
+    return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
+
+
+def remove_old_layout(kind: str) -> None:
+    """Delete E:\\Apps\\<kind>\\SZU-Guardian and E:\\Apps\\<kind> once empty."""
+    folder = old_layout_dir(kind)
+    for item in (folder, folder.parent):
+        try:
+            item.rmdir()
+        except OSError:
+            return
 
 
 def local_cache_dir() -> Path:
@@ -46,10 +78,9 @@ def _is_fixed_drive(root: str) -> bool:
 
 
 def default_cache_dir() -> Path:
-    """E:\\Apps\\Cache\\SZU-Guardian when E: is a local hard disk, else under LocalAppData."""
-    if _is_fixed_drive("E:\\"):
-        return Path("E:/") / APPS_ROOT_NAME / CACHE_FOLDER_NAME / PROJECT_FOLDER
-    return local_cache_dir()
+    """E:\\Apps\\SZU-Guardian\\Cache on a local E: disk, else under LocalAppData."""
+    root = project_root()
+    return root / CACHE_FOLDER_NAME if root else local_cache_dir()
 
 
 def read_user_env(name: str) -> str | None:
@@ -93,7 +124,7 @@ def validate_cache_dir(value: str | os.PathLike[str]) -> Path:
         raise ValueError("路径里不能包含 %")
     path = Path(text)
     if not path.is_absolute() or not path.drive:
-        raise ValueError("请填写带盘符的完整路径，例如 E:\\Apps\\Logs\\SZU-Guardian")
+        raise ValueError("请填写带盘符的完整路径，例如 E:\\Apps\\SZU-Guardian\\Logs")
     if not Path(path.drive + "\\").exists():
         raise ValueError(f"找不到磁盘 {path.drive}")
     try:
@@ -133,6 +164,8 @@ def set_cache_dir(value: str | os.PathLike[str]) -> Path:
 def ensure_registered() -> Path:
     """Make sure the variable exists and its folder is usable; return it."""
     current = registered_cache_dir()
+    if same_path(current, old_layout_dir(CACHE_FOLDER_NAME)):
+        current = None  # the old default: move to the new layout
     if current is not None:
         try:
             return validate_cache_dir(current)
@@ -209,6 +242,8 @@ def cleanup_stale(search_dirs: list[Path], current: Path | None = None) -> tuple
                 directory.rmdir()
             except OSError:
                 pass
+        elif same_path(directory, old_layout_dir(CACHE_FOLDER_NAME)):
+            remove_old_layout(CACHE_FOLDER_NAME)
     return removed, freed
 
 
@@ -223,6 +258,8 @@ def default_search_dirs() -> list[Path]:
             dirs.append(Path(value))
     # Unpacks made while the variable was missing land under the working dir.
     dirs.append(Path.cwd() / _UNEXPANDED)
+    # The cache folder of the old type-first layout (v1.0.0–v1.0.2).
+    dirs.append(old_layout_dir(CACHE_FOLDER_NAME))
     unique = []
     for item in dirs:
         if item not in unique:

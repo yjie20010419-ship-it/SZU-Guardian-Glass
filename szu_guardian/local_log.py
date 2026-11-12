@@ -23,13 +23,22 @@ def legacy_log_directory(data_dir: Path | None = None) -> Path:
     return data_dir / "logs"
 
 
-def default_log_directory(data_dir: Path | None = None) -> Path:
-    """E:\\Apps\\Logs\\SZU-Guardian on a local E: disk, else the data folder."""
-    from .cache_dir import APPS_ROOT_NAME, PROJECT_FOLDER, _is_fixed_drive
+LOGS_FOLDER_NAME = "Logs"
 
-    if _is_fixed_drive("E:\\"):
-        return Path("E:/") / APPS_ROOT_NAME / "Logs" / PROJECT_FOLDER
-    return legacy_log_directory(data_dir)
+
+def default_log_directory(data_dir: Path | None = None) -> Path:
+    """E:\\Apps\\SZU-Guardian\\Logs on a local E: disk, else the data folder."""
+    from .cache_dir import project_root
+
+    root = project_root()
+    return root / LOGS_FOLDER_NAME if root else legacy_log_directory(data_dir)
+
+
+def old_log_locations() -> list[Path]:
+    """Default log folders of earlier versions, oldest first."""
+    from .cache_dir import old_layout_dir
+
+    return [legacy_log_directory(None), old_layout_dir(LOGS_FOLDER_NAME)]
 
 
 def chosen_log_directory(data_dir: Path) -> Path:
