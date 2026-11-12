@@ -26,7 +26,7 @@ from PySide6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QFrame, QPushButton, QWidget
+from PySide6.QtWidgets import QAbstractButton, QFrame, QPushButton, QWidget
 
 OK_COLOR = QColor("#2BB5A0")
 BAD_COLOR = QColor("#F06A6A")
@@ -848,8 +848,11 @@ class NavItem(QPushButton):
             p.drawText(box, Qt.AlignmentFlag.AlignCenter, self.key)
 
 
-class ColorChip(QPushButton):
-    """A theme colour swatch; shows a tick and a ring when selected."""
+class ColorChip(QAbstractButton):
+    """A theme colour swatch; shows a tick and a ring when selected.
+
+    Deliberately not a QPushButton: the app style sheet's QPushButton rules
+    (min-height, padding) would otherwise squash the fixed swatch size."""
 
     def __init__(self, name: str, hue: int):
         super().__init__()
@@ -858,6 +861,9 @@ class ColorChip(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(86, 76)
         THEME.changed.connect(self.update)
+
+    def sizeHint(self) -> QSize:
+        return QSize(86, 76)
 
     def paintEvent(self, event) -> None:
         pal = THEME.palette

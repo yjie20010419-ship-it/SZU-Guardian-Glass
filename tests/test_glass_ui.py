@@ -108,6 +108,13 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(cfg.direct_mode)
         self.assertFalse(cfg.start_on_launch)
 
+    def test_records_show_newest_first(self):
+        app = self.app
+        app._append_log('较早的一条')
+        app._append_log('最新的一条')
+        self.assertIn('最新的一条', app.log_text.toPlainText().splitlines()[0])
+        self.assertEqual(app.log_text.verticalScrollBar().value(), 0)
+
     def test_uu_result_is_displayed_without_starting_real_uu(self):
         self.app.events.put(('uu-status', ('完整重启：主程序 + 后台服务（已授权）', True)))
         self.app.events.put(('uu-conn', 5))

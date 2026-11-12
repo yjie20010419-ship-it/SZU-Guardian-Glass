@@ -365,7 +365,7 @@ class GuardianApp:
         body.addWidget(self.stats_week)
         layout.addWidget(stats)
         logs, body = card()
-        body.addWidget(label('今天的记录（含重启前）· 完整日志按天保留 7 天', 'muted'))
+        body.addWidget(label('今天的记录（含重启前，最新的在最上面）· 完整日志按天保留 7 天', 'muted'))
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setFrameShape(QFrame.Shape.NoFrame)
@@ -404,6 +404,8 @@ class GuardianApp:
         self.interval.setRange(1, 1440)
         self.interval.setSuffix(' 分钟')
         self.interval.setValue(self.config.interval_minutes)
+        # The spin box's inner editor ignores the style sheet padding; match the other fields.
+        self.interval.findChild(QLineEdit).setTextMargins(12, 0, 0, 0)
         for row, (name, widget) in enumerate([('账号', self.username), ('密码', None), ('区域', self.zone), ('检测间隔', self.interval)]):
             grid.addWidget(label(name, 'formLabel'), row, 0)
             if widget is not None:
@@ -443,6 +445,7 @@ class GuardianApp:
         row.addWidget(button('更多颜色…', self._pick_color))
         body.addLayout(row)
         self.appearance_notice = label('', 'muted')
+        self.appearance_notice.hide()  # only shown when saving fails
         body.addWidget(self.appearance_notice)
         layout.addWidget(palette)
         # -- guard options
@@ -682,9 +685,10 @@ class GuardianApp:
         try:
             self.theme_store.save(self.current_color)
             self.saved_color = self.current_color
-            self.appearance_notice.setText('')
+            self.appearance_notice.hide()
         except OSError as exc:
             self.appearance_notice.setText(f'无法保存主题色：{exc}')
+            self.appearance_notice.show()
 
     # ------------------------------------------------------------------ settings
     def _read_form(self) -> AppConfig:
@@ -982,8 +986,9 @@ class GuardianApp:
         self.log_entries.append((now, message))
         while self.log_entries and (self.log_entries[0][0].date() < now.date() or len(self.log_entries) > self.LOG_VIEW_LIMIT):
             self.log_entries.popleft()
-        self.log_text.setPlainText('\n'.join((f'{stamp:%H:%M:%S}   {text}' for stamp, text in self.log_entries)))
-        self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
+        # Newest first, so the latest event is always the top line.
+        self.log_text.setPlainText('\n'.join((f'{stamp:%H:%M:%S}   {text}' for stamp, text in reversed(self.log_entries))))
+        self.log_text.verticalScrollBar().setValue(0)
         recent = [(stamp, text) for stamp, text in self.log_entries if not text.startswith('运行正常')][-4:]
         self.ticker.set_items([(f'{stamp:%H:%M}　{text}', self._event_color(text)) for stamp, text in reversed(recent)])
 
