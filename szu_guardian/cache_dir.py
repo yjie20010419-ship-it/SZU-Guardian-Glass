@@ -26,12 +26,30 @@ PROJECT_FOLDER = "SZU-Guardian"
 _UNEXPANDED = f"%{ENV_NAME}%"
 
 
-def default_cache_dir() -> Path:
-    """E:\\Apps\\Cache\\SZU-Guardian when drive E: exists, else under LocalAppData."""
-    if Path("E:/").exists():
-        return Path("E:/") / APPS_ROOT_NAME / CACHE_FOLDER_NAME / PROJECT_FOLDER
+def local_cache_dir() -> Path:
+    """Always-available fallback inside the user's own profile."""
     base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
     return Path(base) / "SZUNetworkGuardian" / "cache"
+
+
+def _is_fixed_drive(root: str) -> bool:
+    """True for a local hard disk (not a CD drive, USB stick or network share)."""
+    if sys.platform != "win32":
+        return Path(root).exists()
+    try:
+        import ctypes
+
+        DRIVE_FIXED = 3
+        return ctypes.windll.kernel32.GetDriveTypeW(root) == DRIVE_FIXED
+    except (AttributeError, OSError):
+        return False
+
+
+def default_cache_dir() -> Path:
+    """E:\\Apps\\Cache\\SZU-Guardian when E: is a local hard disk, else under LocalAppData."""
+    if _is_fixed_drive("E:\\"):
+        return Path("E:/") / APPS_ROOT_NAME / CACHE_FOLDER_NAME / PROJECT_FOLDER
+    return local_cache_dir()
 
 
 def registered_cache_dir() -> Path | None:
@@ -107,7 +125,11 @@ def ensure_registered() -> Path:
             return validate_cache_dir(current)
         except ValueError:
             pass  # e.g. the drive went away: fall back to the default.
-    return set_cache_dir(default_cache_dir())
+    try:
+        return set_cache_dir(default_cache_dir())
+    except ValueError:
+        # E: exists but cannot be written (full, protected...): use the profile.
+        return set_cache_dir(local_cache_dir())
 
 
 def running_from() -> Path | None:
@@ -165,6 +187,15 @@ def cleanup_stale(search_dirs: list[Path], current: Path | None = None) -> tuple
         if not folder.exists():
             removed += 1
             freed += size
+    # The very first launch on a PC happens before the variable exists, so
+    # it unpacks into a folder literally named %SZU_GUARDIAN_CACHE% next to
+    # the EXE; remove it once it is empty.
+    for directory in search_dirs:
+        if directory.name == _UNEXPANDED:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
     return removed, freed
 
 

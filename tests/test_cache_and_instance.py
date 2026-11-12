@@ -9,6 +9,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication
 
@@ -56,6 +57,30 @@ class CacheDirTests(unittest.TestCase):
         path = cache_dir.default_cache_dir()
         self.assertTrue(path.is_absolute())
         self.assertIn(path.name, (cache_dir.PROJECT_FOLDER, "cache"))
+
+    def test_without_a_usable_e_drive_the_profile_is_used(self):
+        with patch.object(cache_dir, "_is_fixed_drive", return_value=False):
+            self.assertEqual(cache_dir.default_cache_dir(), cache_dir.local_cache_dir())
+
+    def test_unwritable_default_falls_back_to_profile(self):
+        with tempfile.TemporaryDirectory() as temp:
+            good = Path(temp) / "profile-cache"
+            registered = []
+
+            def fake_set(value):
+                if Path(value) != good:
+                    raise ValueError("无法写入该文件夹")
+                registered.append(Path(value))
+                return Path(value)
+
+            with (
+                patch.object(cache_dir, "registered_cache_dir", return_value=None),
+                patch.object(cache_dir, "default_cache_dir", return_value=Path("E:/locked")),
+                patch.object(cache_dir, "local_cache_dir", return_value=good),
+                patch.object(cache_dir, "set_cache_dir", side_effect=fake_set),
+            ):
+                self.assertEqual(cache_dir.ensure_registered(), good)
+            self.assertEqual(registered, [good])
 
 
 class LocalLogReadTests(unittest.TestCase):
