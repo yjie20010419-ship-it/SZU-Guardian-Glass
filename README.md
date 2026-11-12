@@ -51,8 +51,8 @@
 
 | 内容 | 位置 |
 | --- | --- |
-| 配置（密码用 DPAPI 加密） | `%LOCALAPPDATA%\SZUNetworkGuardian\config.json` |
-| 外观 | `%LOCALAPPDATA%\SZUNetworkGuardian\appearance.json` |
+| 配置（密码用 DPAPI 加密） | 用户环境变量 `SZU_GUARDIAN_DATA_DIR` 指定的文件夹里的 `config.json`，默认 `E:\Apps\Config\SZU-Guardian`（没有本地 E 盘时为 `%LOCALAPPDATA%\SZUNetworkGuardian`）；在“设置”页可以修改，立即生效，旧设置会一起移过去 |
+| 外观 | 配置文件夹里的 `appearance.json` |
 | 日志（保留 7 天） | 默认 `E:\Apps\Logs\SZU-Guardian\guardian-YYYY-MM-DD.log`（没有本地 E 盘时为 `%LOCALAPPDATA%\SZUNetworkGuardian\logs`）；在“设置”页可以修改，立即生效，旧日志会一起移过去 |
 | 运行时解压目录 | 用户环境变量 `SZU_GUARDIAN_CACHE`，默认是 `E:\Apps\Cache\SZU-Guardian`（没有 E 盘时放在 `%LOCALAPPDATA%` 下）；在“设置”页可以修改 |
 
