@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import Mock
 
+import requests
+
 from szu_guardian.srun import (
     SrunClient,
     hmac_md5,
@@ -77,6 +79,21 @@ class SrunClientTests(unittest.TestCase):
             [(device.name, device.ip) for device in status.devices],
             [("Macintosh", "172.28.1.50"), ("Windows", "172.30.10.20")],
         )
+
+    def test_certificate_failure_stops_before_any_credentials_are_sent(self):
+        session = Mock()
+        session.headers = {}
+        session.get.side_effect = requests.exceptions.SSLError("certificate verify failed")
+        client = SrunClient("user", "password", session=session)
+
+        with self.assertRaises(ConnectionError) as caught:
+            client.login()
+
+        self.assertIn("证书校验失败", str(caught.exception))
+        for call in session.get.call_args_list:
+            self.assertNotIn("password", call.kwargs.get("params") or {})
+            self.assertNotIn("verify", call.kwargs)  # requests' default: verify=True
+            self.assertFalse(call.kwargs["allow_redirects"])
 
     def test_login_requires_explicit_success_response(self):
         session = Mock()

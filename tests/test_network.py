@@ -1,7 +1,6 @@
 import unittest
 from dataclasses import replace
 from unittest.mock import Mock, patch
-from urllib.parse import parse_qs, urlparse
 
 from szu_guardian.models import AppConfig, ZONE_AUTO, ZONE_DORMITORY
 from szu_guardian.network import ConnectionResult, NetworkClient
@@ -21,9 +20,13 @@ def response(url, status=200, text=""):
 def connected_probe_response(url, **kwargs):
     if "msftconnecttest.com" in url:
         return response(url, text="Microsoft Connect Test")
-    token = parse_qs(urlparse(url).query)["wd"][0]
-    value = response(url, status=302, text=token)
-    value.headers = {"Location": "https://wappass.baidu.com/captcha"}
+    return response(url, status=204)
+
+
+def portal_response(url, **kwargs):
+    """What a captive portal answers before login."""
+    value = response(url, status=302, text="")
+    value.headers = {"Location": "https://net.szu.edu.cn/index_1.html"}
     return value
 
 
@@ -161,29 +164,62 @@ class NetworkClientTests(unittest.TestCase):
         self.assertEqual(second.notes, ())
         self.assertIn("账号在线设备 3 台", third.notes[0])
 
-    def test_internet_hiccup_with_session_online_is_not_a_reconnect(self):
+    def test_internet_outage_with_session_online_does_not_log_in(self):
         client = self._teaching_client()
         config = AppConfig(username="user", password="password")
         srun = Mock()
         srun.status.return_value = SrunStatus(True, "ok")
-        probes = iter([
-            ConnectionResult(False, "直连外网不可用（ConnectTimeout）"),
-            ConnectionResult(True, "网络连接正常", 30),
-        ])
-        progress = []
 
         with (
             patch.object(client, "_teaching_srun_client", return_value=srun),
-            patch.object(client, "check_connection", side_effect=lambda: next(probes)),
-            patch.object(client, "send_login", return_value="认证成功"),
+            patch.object(
+                client,
+                "check_connection",
+                return_value=ConnectionResult(False, "直连外网不可用（微软 ConnectTimeout / 华为 ConnectTimeout）"),
+            ),
+            patch.object(client, "send_login") as login,
         ):
-            result = client.ensure_connected(config, progress.append)
+            result = client.ensure_connected(config)
 
-        self.assertTrue(result.connected)
-        self.assertFalse(result.reconnected)  # so UU Remote is not restarted
-        self.assertIn("认证一直在线", result.message)
-        self.assertIn("ConnectTimeout", progress[0])
-        self.assertIn("认证仍在线", progress[0])
+        login.assert_not_called()
+        self.assertFalse(result.connected)
+        self.assertFalse(result.login_attempted)  # so UU Remote is not restarted later
+        self.assertIn("不是认证问题", result.message)
+        self.assertIn("直连外网不可用", result.message)  # counted by the outage stats
+
+    def test_two_of_three_probes_decide(self):
+        session = Mock()
+        session.headers = {}
+        client = NetworkClient(session=session, portal_session=session)
+        answers = {
+            "msftconnecttest": response("m", status=200, text="Microsoft Connect Test"),
+            "hicloud": response("h", status=302, text="portal"),
+            "vivo": response("v", status=204),
+        }
+        session.get.side_effect = lambda url, **kw: next(v for k, v in answers.items() if k in url)
+        self.assertTrue(client.check_connection().connected)
+        self.assertEqual(session.get.call_count, 3)
+
+        session.get.reset_mock()
+        answers["msftconnecttest"] = response("m", status=200, text="<html>portal</html>")
+        result = client.check_connection()
+        self.assertFalse(result.connected)
+        self.assertEqual(session.get.call_count, 2)  # two failures settle it
+        self.assertIn("微软返回 200", result.message)
+
+        session.get.reset_mock()
+        session.get.side_effect = connected_probe_response
+        self.assertTrue(client.check_connection().connected)
+        self.assertEqual(session.get.call_count, 2)  # two passes settle it
+
+    def test_captive_portal_redirect_is_not_online(self):
+        session = Mock()
+        session.headers = {}
+        session.get.side_effect = portal_response
+        client = NetworkClient(session=session, portal_session=session)
+        self.assertFalse(client.check_connection().connected)
+        for call in session.get.call_args_list:
+            self.assertFalse(call.kwargs["allow_redirects"])
 
     def test_failed_recovery_reports_server_recheck(self):
         client = self._teaching_client()

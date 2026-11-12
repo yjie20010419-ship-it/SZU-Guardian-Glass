@@ -114,6 +114,9 @@ class UuRemoteRestartTests(unittest.TestCase):
     ONLINE = ConnectionResult(True, "网络连接正常", 20)
     RECONNECTED = ConnectionResult(True, "已自动重连，网络恢复正常", 30, True)
     OFFLINE = ConnectionResult(False, "直连外网不可用")
+    LOGIN_NOT_YET_WORKING = ConnectionResult(
+        False, "认证服务器已接受登录，但外网仍不可用", login_attempted=True
+    )
 
     def run_cycles(self, outcomes, config=None, restarter="default"):
         events = []
@@ -150,12 +153,31 @@ class UuRemoteRestartTests(unittest.TestCase):
 
         self.assertEqual(restarts, [])
 
-    def test_recovery_seen_on_a_later_check_still_restarts(self):
+    def test_recovery_after_a_login_on_a_later_check_still_restarts(self):
         _, restarts = self.run_cycles(
-            [self.ONLINE, self.OFFLINE, self.ONLINE, self.ONLINE]
+            [self.ONLINE, self.LOGIN_NOT_YET_WORKING, self.ONLINE, self.ONLINE]
         )
 
         self.assertEqual(len(restarts), 1)
+
+    def test_outage_without_any_login_does_not_restart(self):
+        # e.g. the school uplink was down while the campus login stayed valid
+        _, restarts = self.run_cycles([self.ONLINE, self.OFFLINE, self.OFFLINE, self.ONLINE])
+
+        self.assertEqual(restarts, [])
+
+    def test_failed_checks_are_retried_sooner(self):
+        config = AppConfig(username="u", password="p", interval_minutes=5)
+        delays = [MonitorController.next_delay(config, n) for n in range(5)]
+        self.assertEqual(delays, [300, 30, 60, 120, 120])
+        short = AppConfig(username="u", password="p", interval_minutes=1)
+        self.assertEqual(MonitorController.next_delay(short, 3), 60)  # never past the interval
+
+        events, _ = self.run_cycles([self.OFFLINE, self.ONLINE])
+        waiting = [e for e in events if e.state == "waiting"]
+        self.assertEqual(waiting[0].next_in_seconds, 30)
+        self.assertIn("30 秒后复查", waiting[0].message)
+        self.assertEqual(waiting[1].next_in_seconds, 300)
 
     def test_recovery_after_an_error_restarts(self):
         _, restarts = self.run_cycles([RuntimeError("boom"), self.ONLINE])

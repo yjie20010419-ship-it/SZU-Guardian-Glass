@@ -750,7 +750,8 @@ class GuardianApp:
         if tray_state in self.TRAY_COLORS:
             self.tray.setIcon(self._tray_icon(tray_state))
         if event.state == 'waiting':
-            self.next_check = time.time() + getattr(self, 'active_interval', self.config.interval_minutes) * 60
+            delay = event.next_in_seconds if event.next_in_seconds is not None else getattr(self, 'active_interval', self.config.interval_minutes) * 60
+            self.next_check = time.time() + delay
             self.orb.set_countdown(time.time(), self.next_check)
             self.status_badge.setText('正在守护' if self.last_network_state != 'offline' else '等待重试')
             self._update_countdown()
@@ -773,7 +774,12 @@ class GuardianApp:
     def _update_countdown(self) -> None:
         if self.next_check is not None:
             remaining = max(0, self.next_check - time.time())
-            self.countdown.setText(f'下次检测将在 {math.ceil(remaining / 60)} 分钟内进行' if remaining > 0 else '即将进行下一次检测')
+            if remaining <= 0:
+                self.countdown.setText('即将进行下一次检测')
+            elif self.last_network_state == 'offline':
+                self.countdown.setText(f'{math.ceil(remaining)} 秒后复查')
+            else:
+                self.countdown.setText(f'下次检测将在 {math.ceil(remaining / 60)} 分钟内进行')
 
     def _append_log(self, message: str, level: str='info', persist: bool=True) -> None:
         if persist:

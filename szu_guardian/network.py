@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import json
 import re
-import secrets
 import time
 from dataclasses import dataclass, replace
 from typing import Callable
-from urllib.parse import urlparse
 
 import requests
-import urllib3
 
 from .direct_network import DirectRoute
 from .models import (
@@ -21,13 +18,36 @@ from .models import (
 from .srun import SrunClient, SrunStatus
 
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 DORMITORY_LOGIN_URL = "http://172.30.255.42:801/eportal/portal/login/"
 
 MICROSOFT_CHECK_URL = "http://www.msftconnecttest.com/connecttest.txt"
 MICROSOFT_CHECK_TEXT = "Microsoft Connect Test"
-BAIDU_SEARCH_URL = "https://www.baidu.com/s"
+
+
+@dataclass(frozen=True, slots=True)
+class Probe:
+    """A connectivity-check endpoint and the exact answer it must give.
+
+    A captive portal answers these with a redirect or its own page, so only
+    the exact status (and text, where given) proves the internet is reachable.
+    """
+
+    name: str
+    url: str
+    status: int
+    text: str | None = None
+
+
+# Three independent providers; the internet counts as reachable when at least
+# two answer correctly.  If each probe fails spuriously with probability p,
+# requiring all of two misreports an outage with ≈2p, while "2 of 3" needs two
+# simultaneous failures: 3p²(1-p) + p³ ≈ 3p² (p = 1% → 2% vs 0.03%).
+PROBES = (
+    Probe("微软", MICROSOFT_CHECK_URL, 200, MICROSOFT_CHECK_TEXT),
+    Probe("华为", "http://connectivitycheck.platform.hicloud.com/generate_204", 204),
+    Probe("vivo", "http://wifi.vivo.com.cn/generate_204", 204),
+)
+PROBES_REQUIRED = 2
 
 HEADERS = {
     "User-Agent": (
@@ -46,6 +66,10 @@ class ConnectionResult:
     latency_ms: int | None = None
     # True when this check had to log in again to bring the network back.
     reconnected: bool = False
+    # True whenever a login was sent, successful or not.  UU Remote is
+    # restarted once the network is back after any re-login, never after an
+    # outage the login was not involved in.
+    login_attempted: bool = False
     # Diagnostic lines (server status, online devices) for the local log.
     notes: tuple[str, ...] = ()
 
@@ -122,79 +146,45 @@ class NetworkClient:
         self.portal_session.headers.update(HEADERS)
 
     def _get_check_target(self, url: str) -> requests.Response:
-        if not self.direct_route:
-            return self.session.get(
-                url,
-                timeout=(3, 5),
-                allow_redirects=True,
-            )
-        direct_url, original_host = self.direct_route.rewrite_url(url)
-        return self.session.get(
-            direct_url,
-            headers={"Host": original_host},
-            timeout=(3, 5),
-            allow_redirects=False,
-            verify=False,
-        )
+        # Never follow redirects: a captive portal answers with one.  In
+        # direct mode the session resolves names through the campus adapter.
+        return self.session.get(url, timeout=(3, 5), allow_redirects=False)
 
     def check_connection(self) -> ConnectionResult:
         started = time.perf_counter()
         errors: list[str] = []
-        probe_token = f"szu_guardian_{secrets.token_hex(8)}"
-        targets = (
-            (MICROSOFT_CHECK_URL, MICROSOFT_CHECK_TEXT, None),
-            (f"{BAIDU_SEARCH_URL}?wd={probe_token}", "baidu_search", probe_token),
-        )
-        successful_probes = 0
-
-        for url, expected, token in targets:
+        passed = 0
+        for index, probe in enumerate(PROBES):
             try:
-                response = self._get_check_target(url)
-                if expected == "baidu_search":
-                    location = response.headers.get("Location", "")
-                    redirect_host = urlparse(location).hostname or ""
-                    redirect_is_baidu = not redirect_host or redirect_host.endswith(
-                        ".baidu.com"
-                    )
-                    response_text = response.text + " " + location
-                    valid = (
-                        response.status_code in (200, 301, 302, 303, 307, 308)
-                        and redirect_is_baidu
-                        and bool(token and token in response_text)
-                    )
+                response = self._get_check_target(probe.url)
+                if response.status_code == probe.status and (
+                    probe.text is None or probe.text in response.text
+                ):
+                    passed += 1
                 else:
-                    valid = (
-                        response.status_code == 200
-                        and expected in response.text
-                    )
-                if valid:
-                    successful_probes += 1
-                else:
-                    errors.append(f"检测页返回 {response.status_code}")
+                    errors.append(f"{probe.name}返回 {response.status_code}")
             except requests.RequestException as exc:
-                errors.append(type(exc).__name__)
+                errors.append(f"{probe.name} {type(exc).__name__}")
+            remaining = len(PROBES) - index - 1
+            if passed >= PROBES_REQUIRED or passed + remaining < PROBES_REQUIRED:
+                break  # the verdict can no longer change
 
-        if successful_probes == len(targets):
+        if passed >= PROBES_REQUIRED:
             latency = round((time.perf_counter() - started) * 1000)
             mode = "（校园网直连）" if self.direct_route else ""
             return ConnectionResult(True, f"网络连接正常{mode}", latency)
 
-        detail = " / ".join(errors[-2:]) if errors else "无响应"
+        detail = " / ".join(errors) if errors else "无响应"
         return ConnectionResult(False, f"直连外网不可用（{detail}）")
 
     def _teaching_srun_client(self, config: AppConfig) -> SrunClient:
-        base_url = "https://net.szu.edu.cn"
-        host_header = None
-        if self.direct_route:
-            teaching_ip = self.direct_route.resolve("net.szu.edu.cn")[0]
-            base_url = f"https://{teaching_ip}"
-            host_header = "net.szu.edu.cn"
+        # Real hostname with full TLS verification; in direct mode the
+        # portal session resolves it through the campus adapter's DNS.
         return SrunClient(
             config.username,
             config.password,
             session=self.portal_session,
-            base_url=base_url,
-            host_header=host_header,
+            base_url="https://net.szu.edu.cn",
         )
 
     def _teaching_status(
@@ -314,9 +304,18 @@ class NetworkClient:
             current = self.check_connection()
             if current.connected:
                 return replace(current, notes=tuple(notes))
+            if authenticated:
+                # The server says this PC is logged in, so logging in again
+                # cannot help: the problem is beyond the campus login (school
+                # uplink or the probe sites).  Report it and let the monitor
+                # re-check soon.
+                return ConnectionResult(
+                    False,
+                    f"认证在线，但{current.message}；不是认证问题，暂不重新登录",
+                    notes=tuple(notes),
+                )
             if progress_callback:
-                state = "认证仍在线" if authenticated else "认证状态未知"
-                progress_callback(f"外网检测失败：{current.message}（{state}），尝试重新登录…")
+                progress_callback(f"外网检测失败：{current.message}（认证状态未知），尝试重新登录…")
 
         login_message = self.send_login(config, progress_callback)
         if progress_callback:
@@ -329,19 +328,12 @@ class NetworkClient:
             if verified.connected:
                 if teaching:
                     self._teaching_status(config, notes)
-                if authenticated:
-                    # The login never dropped, so UU Remote needs no restart.
-                    return ConnectionResult(
-                        True,
-                        "网络连接正常（外网短暂不通，认证一直在线）",
-                        verified.latency_ms,
-                        notes=tuple(notes),
-                    )
                 return ConnectionResult(
                     True,
                     "已自动重连，网络恢复正常",
                     verified.latency_ms,
                     reconnected=True,
+                    login_attempted=True,
                     notes=tuple(notes),
                 )
             if progress_callback and attempt < len(self.verify_delays):
@@ -365,5 +357,6 @@ class NetworkClient:
             False,
             "认证服务器已接受登录，但外网仍不可用"
             f"（最后一次检测：{verified.message}{recheck}）",
+            login_attempted=True,
             notes=tuple(notes),
         )

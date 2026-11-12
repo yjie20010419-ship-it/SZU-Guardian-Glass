@@ -22,11 +22,23 @@ class MonitorEvent:
     message: str
     level: str = "info"
     latency_ms: int | None = None
+    # For "waiting" events: seconds until the next check.
+    next_in_seconds: float | None = None
 
 
 class MonitorController:
     WAIT_SLICE_SECONDS = 15.0
     RESUME_GAP_SECONDS = 30.0
+    # After a failed check, look again sooner than the normal interval:
+    # 30 s, then 60 s, then every 120 s (never later than the interval).
+    RETRY_DELAYS = (30.0, 60.0, 120.0)
+
+    @classmethod
+    def next_delay(cls, config: AppConfig, failures: int) -> float:
+        interval = config.interval_minutes * 60.0
+        if not failures:
+            return interval
+        return min(interval, cls.RETRY_DELAYS[min(failures, len(cls.RETRY_DELAYS)) - 1])
 
     def __init__(
         self,
@@ -95,10 +107,11 @@ class MonitorController:
     def _run_loop(self, config: AppConfig) -> None:
         client = self.client_factory()
         self._emit(MonitorEvent("checking", "正在检测网络状态…"))
-        # Set while the network is down, so that a recovery which only shows
-        # up on a later check (login accepted, internet back a bit later)
-        # still counts as a reconnect.
-        was_offline = False
+        # Set once a login has been sent (or a check crashed mid-way) and the
+        # network is not back yet: the restart of UU Remote is then owed on
+        # the first check that finds the network working again.
+        uu_restart_owed = False
+        failures = 0
 
         while not self._stop_event.is_set():
             self._wake_event.clear()
@@ -116,7 +129,10 @@ class MonitorController:
                 )
                 for note in getattr(result, "notes", ()):
                     self._emit(MonitorEvent("note", note))
+                if result.reconnected or getattr(result, "login_attempted", False):
+                    uu_restart_owed = True
                 if result.connected:
+                    failures = 0
                     self._emit(
                         MonitorEvent(
                             "online",
@@ -125,17 +141,18 @@ class MonitorController:
                             result.latency_ms,
                         )
                     )
-                    if result.reconnected or was_offline:
-                        was_offline = False
+                    if uu_restart_owed:
+                        uu_restart_owed = False
                         self._restart_uu_remote(config, result.latency_ms)
                 else:
-                    was_offline = True
+                    failures += 1
                     self._emit(MonitorEvent("offline", result.message, "warning"))
                     # A sleep/wake cycle or DHCP renewal can invalidate the
                     # bound source address, DNS route, and HTTP sessions.
                     client = self.client_factory()
             except Exception as exc:
-                was_offline = True
+                failures += 1
+                uu_restart_owed = True
                 self._emit(
                     MonitorEvent(
                         "offline",
@@ -147,13 +164,13 @@ class MonitorController:
 
             if self._stop_event.is_set():
                 break
-            self._emit(
-                MonitorEvent(
-                    "waiting",
-                    f"下次检测将在 {config.interval_minutes} 分钟内进行",
-                )
-            )
-            wait_reason = self._wait_until_next_check(config.interval_minutes * 60)
+            delay = self.next_delay(config, failures)
+            if failures:
+                text = f"{delay:g} 秒后复查（连续第 {failures} 次异常）"
+            else:
+                text = f"下次检测将在 {config.interval_minutes} 分钟内进行"
+            self._emit(MonitorEvent("waiting", text, next_in_seconds=delay))
+            wait_reason = self._wait_until_next_check(delay)
             if wait_reason == "stop" or self._stop_event.is_set():
                 break
             if wait_reason == "resume":

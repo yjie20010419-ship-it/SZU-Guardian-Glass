@@ -8,11 +8,14 @@ import struct
 import sys
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from requests.adapters import HTTPAdapter
-from urllib3 import PoolManager
+from urllib3 import HTTPConnectionPool, HTTPSConnectionPool, PoolManager
+from urllib3.connection import HTTPConnection, HTTPSConnection
+from urllib3.exceptions import NameResolutionError
 
 
 FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
@@ -291,9 +294,47 @@ def local_ipv4_candidates() -> list[str]:
     return valid
 
 
+Resolver = Callable[[str], str]
+
+
+def _resolving_connection(base: type, resolver: Resolver) -> type:
+    """A connection class that looks names up through ``resolver``.
+
+    Only the TCP connect uses the resolved IP.  The Host header, the TLS SNI
+    and the certificate check all keep the real hostname, so HTTPS stays
+    fully verified even though DNS goes through the campus adapter.
+    """
+
+    class ResolvingConnection(base):  # type: ignore[misc, valid-type]
+        def _new_conn(self):  # noqa: ANN202 - mirrors urllib3
+            hostname = self._dns_host
+            try:
+                ipaddress.ip_address(hostname.strip("[]"))
+                return super()._new_conn()
+            except ValueError:
+                pass
+            try:
+                address = resolver(hostname.rstrip("."))
+            except (OSError, DirectNetworkError) as exc:
+                raise NameResolutionError(
+                    hostname, self, socket.gaierror(str(exc))
+                ) from exc
+            self._dns_host = address
+            try:
+                return super()._new_conn()
+            finally:
+                self._dns_host = hostname
+
+    return ResolvingConnection
+
+
 class SourceAddressAdapter(HTTPAdapter):
-    def __init__(self, source_ip: str, *args, **kwargs):
+    """Bind every connection to the campus adapter's address and, when a
+    resolver is given, resolve names with the campus DNS servers."""
+
+    def __init__(self, source_ip: str, resolver: Resolver | None = None, *args, **kwargs):
         self.source_ip = source_ip
+        self.resolver = resolver
         super().__init__(*args, **kwargs)
 
     def init_poolmanager(
@@ -310,13 +351,25 @@ class SourceAddressAdapter(HTTPAdapter):
             block=block,
             **pool_kwargs,
         )
+        if self.resolver is not None:
+            http_pool = type(
+                "ResolvingHTTPPool",
+                (HTTPConnectionPool,),
+                {"ConnectionCls": _resolving_connection(HTTPConnection, self.resolver)},
+            )
+            https_pool = type(
+                "ResolvingHTTPSPool",
+                (HTTPSConnectionPool,),
+                {"ConnectionCls": _resolving_connection(HTTPSConnection, self.resolver)},
+            )
+            self.poolmanager.pool_classes_by_scheme = {"http": http_pool, "https": https_pool}
 
 
-def create_bound_session(source_ip: str) -> requests.Session:
+def create_bound_session(source_ip: str, resolver: Resolver | None = None) -> requests.Session:
     session = requests.Session()
     session.trust_env = False
-    session.mount("http://", SourceAddressAdapter(source_ip))
-    session.mount("https://", SourceAddressAdapter(source_ip))
+    session.mount("http://", SourceAddressAdapter(source_ip, resolver))
+    session.mount("https://", SourceAddressAdapter(source_ip, resolver))
     return session
 
 
@@ -388,7 +441,9 @@ class DirectRoute:
         raise DirectNetworkError(f"无法直连解析 {hostname}（{detail}）")
 
     def session(self) -> requests.Session:
-        return create_bound_session(self.source_ip)
+        """Session bound to the campus adapter that resolves names with the
+        campus DNS; URLs keep their real hostnames, so TLS is verified."""
+        return create_bound_session(self.source_ip, lambda host: self.resolve(host)[0])
 
     def rewrite_url(self, url: str) -> tuple[str, str]:
         parsed = urlsplit(url)

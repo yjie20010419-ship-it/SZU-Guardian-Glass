@@ -19,6 +19,9 @@ import requests
 
 
 SRUN_BASE_URL = "https://net.szu.edu.cn"
+# SZU teaching/office areas use ac_id 12 (2026 portal); used only when the
+# portal page cannot be read.
+DEFAULT_AC_ID = "12"
 SRUN_ALPHA = "LVoJPiCN2R8G90yg+hmFHuacZ1OWMnrsSTXkYpUq/3dlbfKwv6xztjI7DeBE45QA"
 STANDARD_ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 UINT32_MASK = 0xFFFFFFFF
@@ -181,12 +184,10 @@ class SrunClient:
         password: str,
         session: requests.Session | None = None,
         base_url: str = SRUN_BASE_URL,
-        host_header: str | None = None,
     ):
         self.username = username
         self.password = password
         self.base_url = base_url.rstrip("/")
-        self.host_header = host_header
         self.session = session or requests.Session()
         self.session.trust_env = False
         self.session.headers.update(
@@ -198,47 +199,40 @@ class SrunClient:
             }
         )
 
+    # Certificates are always verified: the login "info" field is the
+    # password XXTEA-encrypted with a key (the challenge) sent over the same
+    # connection, so anyone able to intercept it could recover the password.
+    # Redirects are never followed, so credentials cannot be sent elsewhere.
+
+    def _get(self, path: str, params: dict[str, str] | None = None, timeout=(4, 10)) -> requests.Response:
+        try:
+            return self.session.get(
+                f"{self.base_url}{path}",
+                params=params,
+                timeout=timeout,
+                allow_redirects=False,
+            )
+        except requests.exceptions.SSLError as exc:
+            raise ConnectionError(
+                "认证服务器证书校验失败，为保护密码已停止认证（可能遭到中间人攻击，或学校证书出了问题）"
+            ) from exc
+
     def _get_jsonp(self, path: str, params: dict[str, str]) -> dict[str, Any]:
-        headers = {"Host": self.host_header} if self.host_header else None
-        response = self.session.get(
-            f"{self.base_url}{path}",
-            params=params,
-            headers=headers,
-            timeout=(4, 10),
-            verify=False,
-            allow_redirects=False,
-        )
+        response = self._get(path, params)
         response.raise_for_status()
         return _parse_jsonp(response.text)
 
     def discover_ac_id(self) -> str:
-        headers = {"Host": self.host_header} if self.host_header else None
         try:
-            response = self.session.get(
-                f"{self.base_url}/",
-                headers=headers,
-                timeout=(3, 7),
-                verify=False,
-                allow_redirects=not bool(self.host_header),
-            )
-            search_text = response.text + " " + response.headers.get("Location", "")
-            match = re.search(r"ac_id=(\d+)", search_text)
-            if match:
-                return match.group(1)
-            if self.host_header:
-                response = self.session.get(
-                    f"{self.base_url}/index_1.html",
-                    headers=headers,
-                    timeout=(3, 7),
-                    verify=False,
-                    allow_redirects=False,
-                )
-                match = re.search(r"ac_id=(\d+)", response.text)
+            for path in ("/", "/index_1.html"):
+                response = self._get(path, timeout=(3, 7))
+                search_text = response.text + " " + response.headers.get("Location", "")
+                match = re.search(r"ac_id=(\d+)", search_text)
                 if match:
                     return match.group(1)
-        except requests.RequestException:
+        except (requests.RequestException, ConnectionError):
             pass
-        return "1"
+        return DEFAULT_AC_ID
 
     def status(self) -> SrunStatus:
         """Return the SRun session state reported by ``rad_user_info``."""
