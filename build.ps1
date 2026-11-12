@@ -44,17 +44,8 @@ $previousBuildPath = $env:PATH
 $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$(Split-Path $buildPython)"
 try {
 Invoke-Checked {
-    & $buildPython -m PyInstaller `
-        --noconfirm `
-        --clean `
-        --onefile `
-        --windowed `
-        --runtime-tmpdir "%SZU_GUARDIAN_CACHE%" `
-        --icon "szu_guardian/assets/app.ico" `
-        --add-data "szu_guardian/assets;szu_guardian/assets" `
-        --hidden-import PySide6.QtSvg `
-        --name "SZU-Guardian-Glass" `
-        (Join-Path $projectDirectory "main.py")
+    # All build options (one-file, unpack folder, trimmed Qt parts) live in guardian.spec.
+    & $buildPython -m PyInstaller --noconfirm --clean (Join-Path $projectDirectory "guardian.spec")
 } "PyInstaller build"
 } finally { $env:PATH = $previousBuildPath }
 

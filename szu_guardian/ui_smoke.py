@@ -1,6 +1,16 @@
+import time
 from pathlib import Path
 from .storage import ConfigStore
 from .monitor import MonitorEvent
+
+
+def _settle(app, seconds: float = 0.6) -> None:
+    """Let page fades and sliding animations finish before a screenshot."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        app.qt.processEvents()
+        time.sleep(0.01)
+
 
 def render(destination: Path) -> None:
     from .ui import GuardianApp
@@ -18,18 +28,18 @@ def render(destination: Path) -> None:
     app._apply_event(MonitorEvent('online', '网络检测正常（界面演示）'))
     app._apply_event(MonitorEvent('waiting', '下次检测将在 3 分钟内进行'))
     app.window.show()
-    app.qt.processEvents()
+    _settle(app)
     for index, name in [(0, '状态页'), (1, '设置页'), (2, '记录页')]:
         app._select_page(index)
-        app.qt.processEvents()
+        _settle(app)
         if not app.window.grab().save(str(destination / (name + '.png'))):
             raise OSError('截图写入失败')
     app._apply_theme('#ADE5D1')
     app._select_page(0)
-    app.qt.processEvents()
+    _settle(app)
     app.window.grab().save(str(destination / '薄荷绿.png'))
     app.window.resize(820, 660)
-    app.qt.processEvents()
+    _settle(app)
     app.window.grab().save(str(destination / '小窗口.png'))
     app.timer.stop()
     app.clock_timer.stop()

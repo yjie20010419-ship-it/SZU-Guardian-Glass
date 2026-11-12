@@ -3,6 +3,7 @@
 build/
 dist/
 *.spec
+!guardian.spec
 __pycache__/
 *.pyc
 
