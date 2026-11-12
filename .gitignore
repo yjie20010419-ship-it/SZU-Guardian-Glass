@@ -1,0 +1,11 @@
+# Build outputs
+.venv*/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# Local scratch
+work-*/
+*.log

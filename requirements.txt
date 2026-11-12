@@ -1,0 +1,4 @@
+requests>=2.31,<3
+Pillow>=10,<14
+pystray>=0.19.5,<1
+PySide6-Essentials>=6.10,<7
