@@ -14,11 +14,17 @@ class DataDirTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.saved_env = os.environ.pop(data_dir.ENV_NAME, None)
         self.registry = {}
+        # Every real location is redirected into the temporary folder: these
+        # tests move files around and must never touch the user's E:\Apps
+        # or %LOCALAPPDATA% (an earlier version of this test did).
+        self.old_layout = self.root / "E" / "Apps" / "Config" / "SZU-Guardian"
         patches = [
             patch.object(data_dir, "read_user_env", side_effect=lambda name: self.registry.get(name)),
             patch.object(data_dir, "write_user_env", side_effect=self._write_env),
             patch.object(data_dir, "legacy_data_dir", return_value=self.root / "LocalAppData" / "SZUNetworkGuardian"),
-            patch.object(data_dir, "default_data_dir", return_value=self.root / "E" / "Apps" / "Config" / "SZU-Guardian"),
+            patch.object(data_dir, "default_data_dir", return_value=self.root / "E" / "Apps" / "SZU-Guardian" / "Config"),
+            patch.object(data_dir, "old_layout_dir", return_value=self.old_layout),
+            patch.object(data_dir, "remove_old_layout", side_effect=self._remove_old_layout),
         ]
         for item in patches:
             item.start()
@@ -29,6 +35,10 @@ class DataDirTests(unittest.TestCase):
         if self.saved_env is not None:
             os.environ[data_dir.ENV_NAME] = self.saved_env
         self.temp.cleanup()
+
+    def _remove_old_layout(self, kind):
+        data_dir.remove_if_empty(self.old_layout)
+        data_dir.remove_if_empty(self.old_layout.parent)
 
     def _write_env(self, name, value):
         self.registry[name] = value
@@ -62,22 +72,13 @@ class DataDirTests(unittest.TestCase):
         self.assertEqual(data_dir.ensure_data_dir()[0], chosen)  # next start agrees
 
     def test_old_type_first_layout_moves_to_project_folder(self):
-        old = self.root / "E" / "Apps" / "Config" / "SZU-Guardian"
+        old = self.old_layout
         old.mkdir(parents=True)
         (old / "config.json").write_text("{}", encoding="utf-8")
         self.registry[data_dir.ENV_NAME] = str(old)  # what v1.0.2 saved
-        new = self.root / "E" / "Apps" / "SZU-Guardian" / "Config"
+        new = data_dir.default_data_dir()
 
-        with (
-            patch.object(data_dir, "old_layout_dir", return_value=old),
-            patch.object(data_dir, "default_data_dir", return_value=new),
-            patch.object(
-                data_dir,
-                "remove_old_layout",
-                side_effect=lambda kind: (data_dir.remove_if_empty(old), data_dir.remove_if_empty(old.parent)),
-            ),
-        ):
-            target, moved = data_dir.ensure_data_dir()
+        target, moved = data_dir.ensure_data_dir()
 
         self.assertEqual(target, new)
         self.assertEqual(moved, ["config.json"])

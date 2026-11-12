@@ -53,9 +53,9 @@ def remove_old_layout(kind: str) -> None:
     folder = old_layout_dir(kind)
     for item in (folder, folder.parent):
         try:
-            item.rmdir()
+            item.rmdir()  # only removes an empty folder
         except OSError:
-            return
+            continue  # already gone, or still has content
 
 
 def local_cache_dir() -> Path:
