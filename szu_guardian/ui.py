@@ -12,7 +12,7 @@ from PySide6 import QtSvg  # Load SVG dependency before sanitizing child-process
 from PySide6.QtCore import Qt, QTimer, QRectF, QEvent
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QComboBox, QSpinBox, QStackedWidget, QScrollArea, QTextEdit, QColorDialog, QFileDialog, QMessageBox, QSystemTrayIcon, QMenu, QButtonGroup
-from . import __version__, cache_dir, uu_remote
+from . import __version__, cache_dir, run_marker, uu_remote
 from .appearance import ThemeStore, normalize_color
 from .models import AppConfig, ZONE_AUTO, ZONE_OFFICE, ZONE_DORMITORY
 from .monitor import MonitorController, MonitorEvent
@@ -35,7 +35,7 @@ THEME_PRESETS = [('小清新蓝', 207), ('薄荷绿', 165), ('湖水青', 188), 
 ASSETS = Path(__file__).resolve().parent / 'assets'
 PAGE_STATUS, PAGE_RECORDS, PAGE_SETTINGS = 0, 1, 2
 BUSY_STATES = ('checking', 'reconnecting', 'restarting')
-BAD_WORDS = ('失效', '失败', '异常', '不可用', '断开', '错误')
+BAD_WORDS = ('失效', '失败', '异常', '不可用', '断开', '错误', '没有正常退出')
 GOOD_WORDS = ('恢复', '正常', '成功', '已重连', '已连接', '上线')
 
 
@@ -203,7 +203,11 @@ class GuardianApp:
         self.uu_timer.timeout.connect(self._refresh_uu_connections)
         # Show what was logged earlier today, so a restart keeps the history.
         self.log_entries.extend(self.local_log.read_day(limit=self.LOG_VIEW_LIMIT))
+        last_entry = self._last_log_time()
+        unclean = run_marker.begin(self.data_dir)
         self._append_log('程序已启动')
+        if unclean:
+            self._append_log(run_marker.unclean_message(last_entry), 'warning')
         if self.migrated_logs:
             self._append_log(f'已把 {self.migrated_logs} 个日志文件移到 {self.local_log.directory}')
         self._refresh_stats()
@@ -511,7 +515,9 @@ class GuardianApp:
         except (ValueError, OSError) as exc:
             self.data_dir_notice.setText(str(exc))
             return
+        run_marker.end(old)
         self.data_dir = path
+        run_marker.begin(path)
         self.store.path = path / 'config.json'
         self.theme_store.path = path / 'appearance.json'
         # Without an explicit log folder the logs may live inside the settings folder.
@@ -992,6 +998,15 @@ class GuardianApp:
         recent = [(stamp, text) for stamp, text in self.log_entries if not text.startswith('运行正常')][-4:]
         self.ticker.set_items([(f'{stamp:%H:%M}　{text}', self._event_color(text)) for stamp, text in reversed(recent)])
 
+    def _last_log_time(self) -> dt.datetime | None:
+        """Time of the newest log line written before this start (last 7 days)."""
+        today = dt.date.today()
+        for offset in range(8):
+            entries = self.local_log.read_entries(today - dt.timedelta(days=offset))
+            if entries:
+                return max(stamp for stamp, _level, _message in entries)
+        return None
+
     @staticmethod
     def _event_color(text: str) -> QColor:
         if any(word in text for word in BAD_WORDS):
@@ -1059,6 +1074,7 @@ class GuardianApp:
             return
         self.net_watch.stop()
         self.tray.hide()
+        run_marker.end(self.data_dir)
         for line in self.log_filter.lines_to_write('stopped', '程序退出'):
             self.local_log.write(line)
         self.window.close()

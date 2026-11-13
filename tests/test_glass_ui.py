@@ -108,6 +108,22 @@ class InterfaceTests(unittest.TestCase):
         self.assertTrue(cfg.direct_mode)
         self.assertFalse(cfg.start_on_launch)
 
+    def test_start_after_forced_kill_logs_the_gap(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            (folder / 'running.flag').write_text('pid=1')
+            second = GuardianApp(ConfigStore(folder / 'config.json'), preview=True)
+            try:
+                messages = [text for _stamp, text in second.log_entries]
+                self.assertTrue(any('没有正常退出' in text for text in messages), messages)
+                second.is_exiting = True
+                second._finish_exit()  # monitor never started in preview, so this exits at once
+                self.assertFalse((folder / 'running.flag').exists())
+            finally:
+                second.timer.stop()
+                second.clock_timer.stop()
+                second.window.close()
+
     def test_records_show_newest_first(self):
         app = self.app
         app._append_log('较早的一条')
