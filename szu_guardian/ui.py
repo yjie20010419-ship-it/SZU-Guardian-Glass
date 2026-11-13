@@ -22,7 +22,7 @@ from .local_log import LocalLog, LOCATION_FILE, chosen_log_directory, legacy_log
 from . import data_dir as data_location
 from .data_dir import legacy_data_dir, remove_if_empty
 from .log_policy import RoutineLogFilter
-from .runtime_environment import sanitize_external_environment
+from .runtime_environment import inside_job, sanitize_external_environment
 from .net_watch import AddressChangeWatcher
 from .outage_stats import compute_day, describe, format_duration
 from .motion import AnimatedSwitch, HoverLift, fade_in, set_title_bar_color
@@ -208,6 +208,8 @@ class GuardianApp:
         self._append_log('程序已启动')
         if unclean:
             self._append_log(run_marker.unclean_message(last_entry), 'warning')
+        if not preview and inside_job():
+            self._append_log('守护程序是由其他程序启动的（不是桌面或开机自启），那个程序退出或更新时，可能把守护程序和 UU 远程一起关掉。建议退出后从桌面重新打开', 'warning')
         if self.migrated_logs:
             self._append_log(f'已把 {self.migrated_logs} 个日志文件移到 {self.local_log.directory}')
         self._refresh_stats()

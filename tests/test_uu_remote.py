@@ -236,5 +236,43 @@ class UuRemoteHelperTests(unittest.TestCase):
         self.assertEqual(RestartResult(True, "ok").level, "success")
 
 
+class LaunchDetachTests(unittest.TestCase):
+    """UU is started outside the guardian's job when Windows allows it."""
+
+    def test_asks_to_break_away_from_the_guardians_job(self):
+        with patch.object(uu_remote.subprocess, "Popen") as popen:
+            uu_remote._launch([r"C:\UU\GameViewer.exe"])
+        flags = popen.call_args.kwargs["creationflags"]
+        self.assertTrue(flags & uu_remote._CREATE_BREAKAWAY_FROM_JOB)
+        self.assertTrue(flags & uu_remote._DETACHED_PROCESS)
+
+    def test_falls_back_when_the_job_forbids_breakaway(self):
+        calls = []
+
+        def popen(*args, **kwargs):
+            calls.append(kwargs["creationflags"])
+            if kwargs["creationflags"] & uu_remote._CREATE_BREAKAWAY_FROM_JOB:
+                raise PermissionError(5, "Access is denied")
+            return object()
+
+        with patch.object(uu_remote.subprocess, "Popen", side_effect=popen):
+            uu_remote._launch([r"C:\UU\GameViewer.exe"])
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(calls[1] & uu_remote._CREATE_BREAKAWAY_FROM_JOB)
+
+    def test_other_launch_errors_still_surface(self):
+        with patch.object(uu_remote.subprocess, "Popen", side_effect=FileNotFoundError):
+            with self.assertRaises(FileNotFoundError):
+                uu_remote._launch([r"C:\UU\GameViewer.exe"])
+
+
+class InsideJobTests(unittest.TestCase):
+
+    def test_reports_a_boolean(self):
+        from szu_guardian.runtime_environment import inside_job
+
+        self.assertIsInstance(inside_job(), bool)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,3 +25,28 @@ def sanitize_external_environment(bundle_root: str | None) -> None:
             os.environ[key] = os.pathsep.join(clean)
         else:
             os.environ.pop(key, None)
+
+
+def inside_job() -> bool:
+    """True if this process sits in a Windows job object.
+
+    That happens when the guardian was started by another app (a terminal, an
+    IDE, an AI assistant…) instead of the desktop or the autostart entry. Ending
+    or updating that app can then end the guardian, and UU Remote with it.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32")  # private copy: argtypes stay local
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+        kernel32.IsProcessInJob.restype = wintypes.BOOL
+        result = wintypes.BOOL()
+        if not kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, ctypes.byref(result)):
+            return False
+        return bool(result.value)
+    except (AttributeError, OSError, ctypes.ArgumentError):
+        return False

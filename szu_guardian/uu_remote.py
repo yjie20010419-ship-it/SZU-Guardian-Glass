@@ -50,6 +50,9 @@ _SERVICE_KEY = rf"SYSTEM\CurrentControlSet\Services\{SERVICE_NAME}"
 _CREATE_NO_WINDOW = 0x08000000
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
+# Leave the guardian's job object, so UU keeps running even if whatever
+# started the guardian ends its whole process tree (e.g. an app update).
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 _SC_MANAGER_CONNECT = 0x0001
 _SERVICE_QUERY_STATUS = 0x0004
@@ -123,17 +126,25 @@ def _launch(command: list[str]) -> None:
     kernel32 = ctypes.windll.kernel32
     if bundle_directory:
         kernel32.SetDllDirectoryW(None)
+    flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP
     try:
-        subprocess.Popen(
-            command,
-            cwd=str(Path(command[0]).parent),
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP,
-        )
+        for extra in (_CREATE_BREAKAWAY_FROM_JOB, 0):
+            try:
+                subprocess.Popen(
+                    command,
+                    cwd=str(Path(command[0]).parent),
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                    creationflags=flags | extra,
+                )
+                return
+            except PermissionError:
+                # The job forbids breaking away: start UU normally instead.
+                if not extra:
+                    raise
     finally:
         if bundle_directory:
             kernel32.SetDllDirectoryW(str(bundle_directory))
