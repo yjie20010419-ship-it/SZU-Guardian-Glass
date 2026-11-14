@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 ENV_NAME = "SZU_GUARDIAN_CACHE"
@@ -199,8 +200,32 @@ def _folder_size(folder: Path) -> int:
     return total
 
 
-def stale_unpacks(search_dirs: list[Path], current: Path | None = None) -> list[Path]:
-    """Leftover guardian unpack folders (from crashes or forced kills)."""
+# A second copy that is still unpacking/loading has not taken the
+# single-instance lock yet, so its folder must not be treated as a leftover.
+MIN_STALE_AGE_SECONDS = 600
+
+
+def _is_recent(folder: Path, min_age: float) -> bool:
+    if min_age <= 0:
+        return False
+    try:
+        info = folder.stat()
+    except OSError:
+        return True
+    newest = max(info.st_mtime, info.st_ctime)
+    return time.time() - newest < min_age
+
+
+def stale_unpacks(
+    search_dirs: list[Path],
+    current: Path | None = None,
+    min_age: float = MIN_STALE_AGE_SECONDS,
+) -> list[Path]:
+    """Leftover guardian unpack folders (from crashes or forced kills).
+
+    Folders touched within ``min_age`` seconds are skipped: they may belong
+    to a copy that is starting up right now.
+    """
     found = []
     current_resolved = current.resolve() if current else None
     for directory in search_dirs:
@@ -214,20 +239,26 @@ def stale_unpacks(search_dirs: list[Path], current: Path | None = None) -> list[
                     continue
                 if current_resolved and child.resolve() == current_resolved:
                     continue
+                if _is_recent(child, min_age):
+                    continue
             except OSError:
                 continue
             found.append(child)
     return found
 
 
-def cleanup_stale(search_dirs: list[Path], current: Path | None = None) -> tuple[int, int]:
+def cleanup_stale(
+    search_dirs: list[Path],
+    current: Path | None = None,
+    min_age: float = MIN_STALE_AGE_SECONDS,
+) -> tuple[int, int]:
     """Delete leftover unpack folders; return (folders removed, bytes freed).
 
     Only call this while holding the single-instance lock, so no other
     guardian process can be using one of these folders.
     """
     removed = freed = 0
-    for folder in stale_unpacks(search_dirs, current):
+    for folder in stale_unpacks(search_dirs, current, min_age):
         size = _folder_size(folder)
         shutil.rmtree(folder, ignore_errors=True)
         if not folder.exists():

@@ -44,7 +44,7 @@ class CacheDirTests(unittest.TestCase):
             unrelated = root / "notes"
             unrelated.mkdir()
 
-            removed, freed = cache_dir.cleanup_stale([root], current)
+            removed, freed = cache_dir.cleanup_stale([root], current, min_age=0)
 
             self.assertEqual(removed, 1)
             self.assertGreaterEqual(freed, 2048)
@@ -52,6 +52,23 @@ class CacheDirTests(unittest.TestCase):
             self.assertTrue(current.exists())
             self.assertTrue(other.exists())
             self.assertTrue(unrelated.exists())
+
+    def test_cleanup_spares_folders_of_a_copy_that_is_still_starting(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            starting = make_unpack(root, "_MEI4444")
+            current = make_unpack(root, "_MEI2222")
+
+            removed, _ = cache_dir.cleanup_stale([root], current)
+
+            self.assertEqual(removed, 0)
+            self.assertTrue(starting.exists())
+
+            # Once it is old enough it counts as a leftover.
+            with patch.object(cache_dir.time, "time", return_value=time.time() + 3600):
+                removed, _ = cache_dir.cleanup_stale([root], current)
+            self.assertEqual(removed, 1)
+            self.assertFalse(starting.exists())
 
     def test_default_dir_is_project_folder(self):
         path = cache_dir.default_cache_dir()
